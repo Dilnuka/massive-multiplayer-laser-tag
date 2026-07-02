@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Game } from './components/Game';
 import { MobileControls } from './components/MobileControls';
 import { LobbyBrowser, LobbyRoom } from './components/Lobby';
+import { buildArenaObstacles } from './components/Arena';
 import { useGameStore } from './store';
 
 function usePointerLockState() {
@@ -173,6 +174,8 @@ function MiniMap({
 }) {
   const size = 128;
   const half = arenaSize / 2;
+  const wallThickness = 4;
+  const obstacles = useMemo(() => buildArenaObstacles(150), []);
 
   const toXY = (pos: [number, number, number]) => {
     const xNorm = (pos[0] + half) / arenaSize;
@@ -192,6 +195,33 @@ function MiniMap({
         <rect x="0" y="0" width={size} height={size} fill="rgba(0,0,0,0.25)" stroke="rgba(34,211,238,0.25)" />
         <line x1={size / 2} y1={0} x2={size / 2} y2={size} stroke="rgba(34,211,238,0.15)" />
         <line x1={0} y1={size / 2} x2={size} y2={size / 2} stroke="rgba(34,211,238,0.15)" />
+
+        {/* arena boundary walls */}
+        <rect x="0" y="0" width={size} height={wallThickness} fill="rgba(0,255,255,0.45)" />
+        <rect x="0" y={size - wallThickness} width={size} height={wallThickness} fill="rgba(255,0,255,0.45)" />
+        <rect x="0" y="0" width={wallThickness} height={size} fill="rgba(255,0,255,0.45)" />
+        <rect x={size - wallThickness} y="0" width={wallThickness} height={size} fill="rgba(0,255,255,0.45)" />
+
+        {/* static obstacles */}
+        {obstacles.map((obstacle, idx) => {
+          const x = ((obstacle.position[0] - obstacle.size[0] / 2) + half) / arenaSize * size;
+          const y = ((obstacle.position[2] - obstacle.size[2] / 2) + half) / arenaSize * size;
+          const width = obstacle.size[0] / arenaSize * size;
+          const height = obstacle.size[2] / arenaSize * size;
+          return (
+            <rect
+              key={idx}
+              x={x}
+              y={y}
+              width={width}
+              height={height}
+              rx={1}
+              fill="rgba(18,24,40,0.85)"
+              stroke="rgba(0,255,255,0.18)"
+              strokeWidth={0.75}
+            />
+          );
+        })}
 
         {/* others */}
         {others.map((o, idx) => {
@@ -309,7 +339,6 @@ function ProfileCard() {
   const updateProfile = useGameStore(state => state.updateProfile);
   const enterLobbyPlatform = useGameStore(state => state.enterLobbyPlatform);
   const [displayName, setDisplayName] = useState(currentUser?.display_name ?? '');
-  const [bio, setBio] = useState(currentUser?.bio ?? '');
   const [avatarColor, setAvatarColor] = useState(currentUser?.avatar_color ?? '#00ffff');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
@@ -317,7 +346,6 @@ function ProfileCard() {
 
   useEffect(() => {
     setDisplayName(currentUser?.display_name ?? '');
-    setBio(currentUser?.bio ?? '');
     setAvatarColor(currentUser?.avatar_color ?? '#00ffff');
   }, [currentUser]);
 
@@ -329,7 +357,7 @@ function ProfileCard() {
     e.preventDefault();
     setSaving(true);
     setMessage('');
-    const result = await updateProfile({ displayName, bio, avatarColor });
+    const result = await updateProfile({ displayName, bio: '', avatarColor });
     setSaving(false);
     setMessage(result.ok ? 'Profile updated.' : result.error || 'Failed to update profile.');
   };
@@ -358,14 +386,6 @@ function ProfileCard() {
             onChange={(e) => setDisplayName(e.target.value)}
             placeholder="Display Name"
             className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
-          />
-          <textarea
-            value={bio}
-            onChange={(e) => setBio(e.target.value)}
-            placeholder="Short bio"
-            maxLength={160}
-            rows={3}
-            className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400 resize-none"
           />
           <label className="text-cyan-400/70 text-sm flex items-center justify-between gap-3">
             Profile Color

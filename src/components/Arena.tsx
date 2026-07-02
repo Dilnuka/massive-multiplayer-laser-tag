@@ -30,6 +30,14 @@ function useIsMobile() {
   return isMobile;
 }
 
+export type ArenaObstacle = {
+  type: 'box';
+  position: [number, number, number];
+  size: [number, number, number];
+  rotation: [number, number, number];
+  color: string;
+};
+
 // Seeded PRNG for consistent multiplayer obstacle generation
 function mulberry32(a: number) {
   return function() {
@@ -39,47 +47,38 @@ function mulberry32(a: number) {
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   }
 }
-const rng = mulberry32(12345);
 
-const OBSTACLES = Array.from({ length: 150 }).map(() => {
-  const type = 'box';
-  const x = (rng() - 0.5) * 170; // Avoid edges
-  const z = (rng() - 0.5) * 170;
-  
-  // Keep center somewhat clear
-  if (Math.abs(x) < 20 && Math.abs(z) < 20) return null;
+export function buildArenaObstacles(count: number): ArenaObstacle[] {
+  const rng = mulberry32(12345);
 
-  const height = rng() * 8 + 6;
-  const isHorizontal = rng() > 0.5;
-  const width = isHorizontal ? rng() * 25 + 10 : rng() * 3 + 1;
-  const depth = isHorizontal ? rng() * 3 + 1 : rng() * 25 + 10;
-  const rotation = 0; // Axis aligned for maze feel
-  const color = rng() > 0.5 ? "#00ffff" : "#ff00ff";
+  return Array.from({ length: count }).map(() => {
+    const type = 'box' as const;
+    const x = (rng() - 0.5) * 170;
+    const z = (rng() - 0.5) * 170;
 
-  return { type, position: [x, height / 2 - 0.5, z], size: [width, height, depth], rotation: [0, rotation, 0], color };
-}).filter(Boolean);
+    if (Math.abs(x) < 20 && Math.abs(z) < 20) return null;
+
+    const height = rng() * 8 + 6;
+    const isHorizontal = rng() > 0.5;
+    const width = isHorizontal ? rng() * 25 + 10 : rng() * 3 + 1;
+    const depth = isHorizontal ? rng() * 3 + 1 : rng() * 25 + 10;
+    const color = rng() > 0.5 ? "#00ffff" : "#ff00ff";
+
+    return {
+      type,
+      position: [x, height / 2 - 0.5, z] as [number, number, number],
+      size: [width, height, depth] as [number, number, number],
+      rotation: [0, 0, 0] as [number, number, number],
+      color,
+    };
+  }).filter((obstacle): obstacle is ArenaObstacle => obstacle !== null);
+}
 
 export function Arena() {
   const isMobile = useIsMobile();
   
   const obstacles = useMemo(() => {
-    const count = isMobile ? 60 : 150;
-    const rngLocal = mulberry32(12345);
-    return Array.from({ length: count }).map(() => {
-      const type = 'box';
-      const x = (rngLocal() - 0.5) * 170;
-      const z = (rngLocal() - 0.5) * 170;
-      
-      if (Math.abs(x) < 20 && Math.abs(z) < 20) return null;
-
-      const height = rngLocal() * 8 + 6;
-      const isHorizontal = rngLocal() > 0.5;
-      const width = isHorizontal ? rngLocal() * 25 + 10 : rngLocal() * 3 + 1;
-      const depth = isHorizontal ? rngLocal() * 3 + 1 : rngLocal() * 25 + 10;
-      const color = rngLocal() > 0.5 ? "#00ffff" : "#ff00ff";
-
-      return { type, position: [x, height / 2 - 0.5, z], size: [width, height, depth], rotation: [0, 0, 0], color };
-    }).filter(Boolean);
+    return buildArenaObstacles(isMobile ? 60 : 150);
   }, [isMobile]);
 
   return (
