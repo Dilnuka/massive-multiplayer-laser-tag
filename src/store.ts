@@ -62,6 +62,8 @@ interface GameStore {
   
   // Multiplayer
   socket: Socket | null;
+  currentUser: { username: string, total_score: number, level: number, matches_played: number } | null;
+  setCurrentUser: (user: any) => void;
   otherPlayers: Record<string, PlayerData>;
 
   startGame: () => void;
@@ -116,6 +118,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   events: [],
   
   socket: null,
+  currentUser: null,
+  setCurrentUser: (user) => set({ currentUser: user }),
   otherPlayers: {},
 
   mobileInput: {
@@ -129,7 +133,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   })),
 
   startGame: () => {
-    const { socket } = get();
+    const { socket, currentUser } = get();
     
     if (socket) {
       socket.disconnect();
@@ -141,7 +145,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     newSocket = io(window.location.origin);
     
     newSocket.on('connect', () => {
-      newSocket!.emit('joinGame');
+      newSocket!.emit('joinGame', currentUser?.username);
     });
 
     newSocket.on('gameError', (msg: string) => {

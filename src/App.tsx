@@ -129,10 +129,70 @@ function useIsMobile() {
   return isMobile;
 }
 
+function AuthMenu() {
+  const [isLogin, setIsLogin] = useState(true);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const setCurrentUser = useGameStore(state => state.setCurrentUser);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const res = await fetch(isLogin ? '/api/login' : '/api/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || 'An error occurred');
+        return;
+      }
+      setCurrentUser(data.user);
+    } catch (err) {
+      setError('Failed to connect to server');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="flex flex-col gap-4 w-80 bg-black/50 p-6 rounded border border-cyan-900/50">
+      <h2 className="text-2xl text-cyan-400 font-bold mb-2 text-center">{isLogin ? 'LOGIN' : 'REGISTER'}</h2>
+      {error && <div className="text-red-500 text-sm">{error}</div>}
+      <input
+        type="text"
+        placeholder="Username"
+        value={username}
+        onChange={e => setUsername(e.target.value)}
+        className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
+      />
+      <input
+        type="password"
+        placeholder="Password"
+        value={password}
+        onChange={e => setPassword(e.target.value)}
+        className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
+      />
+      <button type="submit" className="px-4 py-2 bg-cyan-500/20 border border-cyan-400 text-cyan-400 font-bold hover:bg-cyan-400 hover:text-black transition-all">
+        {isLogin ? 'LOGIN' : 'REGISTER'}
+      </button>
+      <button type="button" onClick={() => setIsLogin(!isLogin)} className="text-cyan-400/50 text-sm hover:text-cyan-400">
+        {isLogin ? 'Need an account? Register' : 'Have an account? Login'}
+      </button>
+      <button type="button" onClick={() => setCurrentUser({ username: `Guest_${Math.floor(Math.random()*1000)}`, total_score: 0, level: 1, matches_played: 0 })} className="text-gray-500 text-sm hover:text-gray-400 mt-2">
+        Play as Guest
+      </button>
+    </form>
+  );
+}
+
 export default function App() {
   const gameState = useGameStore(state => state.gameState);
   const score = useGameStore(state => state.score);
   const startGame = useGameStore(state => state.startGame);
+  const currentUser = useGameStore(state => state.currentUser);
+  const setCurrentUser = useGameStore(state => state.setCurrentUser);
   const isMobile = useIsMobile();
 
   return (
@@ -156,14 +216,25 @@ export default function App() {
             Hit enemies for points. Don't get hit!
           </p>
 
-          <div className="flex flex-col gap-6 w-80">
-            <button
-              onClick={() => startGame()}
-              className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)]"
-            >
-              PLAY NOW
-            </button>
-          </div>
+          {!currentUser ? (
+            <AuthMenu />
+          ) : (
+            <div className="flex flex-col items-center gap-6 w-80">
+              <div className="bg-black/50 border border-cyan-900/50 p-4 rounded w-full text-center">
+                <div className="text-cyan-400 text-xl font-bold mb-2">{currentUser.username}</div>
+                <div className="text-cyan-400/70 text-sm">Level: {currentUser.level}</div>
+                <div className="text-cyan-400/70 text-sm">Total Score: {currentUser.total_score}</div>
+                <div className="text-cyan-400/70 text-sm">Matches: {currentUser.matches_played}</div>
+                <button onClick={() => setCurrentUser(null)} className="mt-4 text-xs text-red-500/70 hover:text-red-500">Log Out</button>
+              </div>
+              <button
+                onClick={() => startGame()}
+                className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)]"
+              >
+                PLAY NOW
+              </button>
+            </div>
+          )}
         </div>
       )}
 
