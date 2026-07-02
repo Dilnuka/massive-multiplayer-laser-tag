@@ -32,6 +32,7 @@ function HUD() {
   const playerState = useGameStore(state => state.playerState);
   const otherPlayers = useGameStore(state => state.otherPlayers);
   const localPlayerPosition = useGameStore(state => state.localPlayerPosition);
+  const localPlayerRotation = useGameStore(state => state.localPlayerRotation);
   const events = useGameStore(state => state.events);
   const currentLobby = useGameStore(state => state.currentLobby);
   const playerCount = Object.keys(otherPlayers).length + 1;
@@ -65,7 +66,14 @@ function HUD() {
         <MiniMap
           arenaSize={200}
           me={localPlayerPosition}
-          others={Object.values(otherPlayers).map(p => ({ pos: p.position, color: p.color, state: p.state }))}
+          meRotation={localPlayerRotation}
+          others={Object.values(otherPlayers).map(p => ({
+            pos: p.position,
+            rotation: p.rotation,
+            color: p.color,
+            state: p.state,
+            name: p.name,
+          }))}
         />
       </div>
 
@@ -166,72 +174,122 @@ function HUD() {
 function MiniMap({
   arenaSize,
   me,
+  meRotation,
   others,
 }: {
   arenaSize: number;
   me: [number, number, number];
-  others: Array<{ pos: [number, number, number]; color: string; state: 'active' | 'disabled' }>;
+  meRotation: number;
+  others: Array<{ pos: [number, number, number]; rotation: number; color: string; state: 'active' | 'disabled'; name: string }>;
 }) {
-  const size = 128;
+  const size = 152;
   const half = arenaSize / 2;
-  const wallThickness = 4;
   const obstacles = useMemo(() => buildArenaObstacles(150), []);
+  const center = size / 2;
+  const radarRadius = size / 2 - 8;
+  const innerSquareSize = radarRadius * Math.sqrt(2);
+  const innerSquareOffset = center - innerSquareSize / 2;
 
   const toXY = (pos: [number, number, number]) => {
     const xNorm = (pos[0] + half) / arenaSize;
     const yNorm = (pos[2] + half) / arenaSize;
-    const x = Math.max(0, Math.min(1, xNorm)) * size;
-    const y = Math.max(0, Math.min(1, yNorm)) * size;
+    const x = Math.max(0, Math.min(1, xNorm)) * innerSquareSize + innerSquareOffset;
+    const y = Math.max(0, Math.min(1, yNorm)) * innerSquareSize + innerSquareOffset;
     return { x, y };
+  };
+
+  const getHeadingPoint = (x: number, y: number, rotation: number, length: number) => ({
+    x: x - Math.sin(rotation) * length,
+    y: y - Math.cos(rotation) * length,
+  });
+
+  const renderMarker = (
+    x: number,
+    y: number,
+    rotation: number,
+    fill: string,
+    stroke: string,
+    isLocal: boolean,
+  ) => {
+    const tip = getHeadingPoint(x, y, rotation, isLocal ? 11 : 9);
+    const left = getHeadingPoint(x, y, rotation - 0.78, isLocal ? 5.2 : 4.4);
+    const right = getHeadingPoint(x, y, rotation + 0.78, isLocal ? 5.2 : 4.4);
+    const points = `${tip.x},${tip.y} ${left.x},${left.y} ${right.x},${right.y}`;
+
+    return (
+      <>
+        <polygon points={points} fill={fill} stroke={stroke} strokeWidth={1.2} />
+        <circle cx={x} cy={y} r={isLocal ? 4.5 : 3.5} fill={fill} stroke={stroke} strokeWidth={1.2} />
+      </>
+    );
   };
 
   const meXY = toXY(me);
 
   return (
-    <div className="bg-black/55 border border-cyan-900/60 rounded p-2 backdrop-blur">
-      <div className="text-cyan-400/70 text-[10px] font-bold tracking-widest mb-1">RADAR</div>
+    <div className="bg-black/60 border border-cyan-900/60 rounded-[999px] p-2 backdrop-blur shadow-[0_0_20px_rgba(34,211,238,0.14)]">
+      <div className="text-cyan-300/80 text-[10px] font-bold tracking-[0.25em] mb-1 text-center">RADAR</div>
       <svg width={size} height={size} className="block">
-        {/* grid */}
-        <rect x="0" y="0" width={size} height={size} fill="rgba(0,0,0,0.25)" stroke="rgba(34,211,238,0.25)" />
-        <line x1={size / 2} y1={0} x2={size / 2} y2={size} stroke="rgba(34,211,238,0.15)" />
-        <line x1={0} y1={size / 2} x2={size} y2={size / 2} stroke="rgba(34,211,238,0.15)" />
-
-        {/* arena boundary walls */}
-        <rect x="0" y="0" width={size} height={wallThickness} fill="rgba(0,255,255,0.45)" />
-        <rect x="0" y={size - wallThickness} width={size} height={wallThickness} fill="rgba(255,0,255,0.45)" />
-        <rect x="0" y="0" width={wallThickness} height={size} fill="rgba(255,0,255,0.45)" />
-        <rect x={size - wallThickness} y="0" width={wallThickness} height={size} fill="rgba(0,255,255,0.45)" />
-
-        {/* static obstacles */}
-        {obstacles.map((obstacle, idx) => {
-          const x = ((obstacle.position[0] - obstacle.size[0] / 2) + half) / arenaSize * size;
-          const y = ((obstacle.position[2] - obstacle.size[2] / 2) + half) / arenaSize * size;
-          const width = obstacle.size[0] / arenaSize * size;
-          const height = obstacle.size[2] / arenaSize * size;
-          return (
-            <rect
-              key={idx}
-              x={x}
-              y={y}
-              width={width}
-              height={height}
-              rx={1}
-              fill="rgba(18,24,40,0.85)"
-              stroke="rgba(0,255,255,0.18)"
-              strokeWidth={0.75}
-            />
-          );
-        })}
-
-        {/* others */}
-        {others.map((o, idx) => {
-          const { x, y } = toXY(o.pos);
-          const fill = o.state === 'disabled' ? 'rgba(148,163,184,0.7)' : o.color;
-          return <circle key={idx} cx={x} cy={y} r={3.5} fill={fill} stroke="rgba(0,0,0,0.5)" />;
-        })}
-
-        {/* me */}
-        <circle cx={meXY.x} cy={meXY.y} r={4.5} fill="#ffffff" stroke="#00ffff" strokeWidth={1.5} />
+        <defs>
+          <clipPath id="radarClip">
+            <circle cx={center} cy={center} r={radarRadius} />
+          </clipPath>
+        </defs>
+        <circle cx={center} cy={center} r={radarRadius + 2} fill="rgba(255,255,255,0.03)" stroke="rgba(34,211,238,0.35)" strokeWidth={2} />
+        <circle cx={center} cy={center} r={radarRadius} fill="rgba(2,8,23,0.92)" />
+        <g clipPath="url(#radarClip)">
+          <circle cx={center} cy={center} r={radarRadius * 0.7} fill="none" stroke="rgba(34,211,238,0.10)" />
+          <circle cx={center} cy={center} r={radarRadius * 0.4} fill="none" stroke="rgba(34,211,238,0.10)" />
+          <line x1={center} y1={6} x2={center} y2={size - 6} stroke="rgba(34,211,238,0.14)" />
+          <line x1={6} y1={center} x2={size - 6} y2={center} stroke="rgba(34,211,238,0.14)" />
+          <rect
+            x={innerSquareOffset}
+            y={innerSquareOffset}
+            width={innerSquareSize}
+            height={innerSquareSize}
+            fill="none"
+            stroke="rgba(125,211,252,0.18)"
+            strokeWidth={1}
+            strokeDasharray="3 3"
+          />
+          <rect x={innerSquareOffset} y={innerSquareOffset} width={innerSquareSize} height={3} fill="rgba(34,211,238,0.65)" />
+          <rect x={innerSquareOffset} y={innerSquareOffset + innerSquareSize - 3} width={innerSquareSize} height={3} fill="rgba(217,70,239,0.65)" />
+          <rect x={innerSquareOffset} y={innerSquareOffset} width={3} height={innerSquareSize} fill="rgba(217,70,239,0.65)" />
+          <rect x={innerSquareOffset + innerSquareSize - 3} y={innerSquareOffset} width={3} height={innerSquareSize} fill="rgba(34,211,238,0.65)" />
+          {obstacles.map((obstacle, idx) => {
+            const x = ((obstacle.position[0] - obstacle.size[0] / 2) + half) / arenaSize * innerSquareSize + innerSquareOffset;
+            const y = ((obstacle.position[2] - obstacle.size[2] / 2) + half) / arenaSize * innerSquareSize + innerSquareOffset;
+            const width = obstacle.size[0] / arenaSize * innerSquareSize;
+            const height = obstacle.size[2] / arenaSize * innerSquareSize;
+            return (
+              <rect
+                key={idx}
+                x={x}
+                y={y}
+                width={width}
+                height={height}
+                rx={1}
+                fill="rgba(15,23,42,0.9)"
+                stroke="rgba(148,163,184,0.35)"
+                strokeWidth={0.8}
+              />
+            );
+          })}
+          {others.map((o, idx) => {
+            const { x, y } = toXY(o.pos);
+            const fill = o.state === 'disabled' ? 'rgba(148,163,184,0.75)' : o.color;
+            return (
+              <g key={`${o.name}-${idx}`}>
+                {renderMarker(x, y, o.rotation, fill, 'rgba(2,6,23,0.8)', false)}
+              </g>
+            );
+          })}
+          {renderMarker(meXY.x, meXY.y, meRotation, '#ffffff', '#22d3ee', true)}
+        </g>
+        <circle cx={center} cy={center} r={1.5} fill="rgba(34,211,238,0.9)" />
+        <text x={center} y={size - 8} textAnchor="middle" className="fill-cyan-200/70" style={{ fontSize: 9, letterSpacing: '0.18em' }}>
+          LIVE MATCH
+        </text>
       </svg>
     </div>
   );

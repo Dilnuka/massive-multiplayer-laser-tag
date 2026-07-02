@@ -105,7 +105,9 @@ interface GameStore {
   updateProfile: (profile: { displayName: string; bio: string; avatarColor: string }) => Promise<{ ok: boolean; error?: string }>;
   otherPlayers: Record<string, PlayerData>;
   localPlayerPosition: [number, number, number];
+  localPlayerRotation: number;
   setLocalPlayerPosition: (pos: [number, number, number]) => void;
+  setLocalPlayerRotation: (rotation: number) => void;
 
   lobbies: PublicLobby[];
   currentLobby: LobbyDetail | null;
@@ -528,7 +530,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
   otherPlayers: {},
   localPlayerPosition: [0, 2, 0],
+  localPlayerRotation: 0,
   setLocalPlayerPosition: (pos) => set({ localPlayerPosition: pos }),
+  setLocalPlayerRotation: (rotation) => set({ localPlayerRotation: rotation }),
 
   lobbies: [],
   currentLobby: null,

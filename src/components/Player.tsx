@@ -75,6 +75,7 @@ export function Player() {
 
   const updatePlayerPosition = useGameStore(state => state.updatePlayerPosition);
   const setLocalPlayerPosition = useGameStore(state => state.setLocalPlayerPosition);
+  const setLocalPlayerRotation = useGameStore(state => state.setLocalPlayerRotation);
 
   // Shooting logic function
   const shoot = () => {
@@ -248,6 +249,7 @@ export function Player() {
     const nowLocal = Date.now();
     if (nowLocal - lastLocalPosEmit.current > 50) {
       setLocalPlayerPosition([pos.x, pos.y, pos.z]);
+      setLocalPlayerRotation(camera.rotation.y);
       lastLocalPosEmit.current = nowLocal;
     }
 
