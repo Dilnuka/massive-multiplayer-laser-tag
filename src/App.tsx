@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Game } from './components/Game';
 import { MobileControls } from './components/MobileControls';
+import { LobbyBrowser, LobbyRoom } from './components/Lobby';
 import { useGameStore } from './store';
 
 function HUD() {
@@ -15,6 +16,7 @@ function HUD() {
   const playerState = useGameStore(state => state.playerState);
   const otherPlayers = useGameStore(state => state.otherPlayers);
   const events = useGameStore(state => state.events);
+  const currentLobby = useGameStore(state => state.currentLobby);
   const playerCount = Object.keys(otherPlayers).length + 1;
   const leaveGame = useGameStore(state => state.leaveGame);
   const isMobile = useIsMobile();
@@ -89,6 +91,11 @@ function HUD() {
 
       {/* Multiplayer Info */}
       <div className="absolute top-12 left-1/2 -translate-x-1/2 flex flex-col items-center pointer-events-none">
+        {currentLobby && (
+          <div className="text-fuchsia-400 text-[10px] md:text-xs font-bold drop-shadow-[0_0_8px_rgba(232,121,249,0.8)] mb-1">
+            {currentLobby.name}
+          </div>
+        )}
         <div className="text-cyan-400 text-[10px] md:text-sm font-bold drop-shadow-[0_0_8px_rgba(34,211,238,0.8)] opacity-70">
           PLAYERS ONLINE: {playerCount}
         </div>
@@ -209,11 +216,13 @@ function ProfileCard() {
   const currentUser = useGameStore(state => state.currentUser);
   const logout = useGameStore(state => state.logout);
   const updateProfile = useGameStore(state => state.updateProfile);
+  const enterLobbyPlatform = useGameStore(state => state.enterLobbyPlatform);
   const [displayName, setDisplayName] = useState(currentUser?.display_name ?? '');
   const [bio, setBio] = useState(currentUser?.bio ?? '');
   const [avatarColor, setAvatarColor] = useState(currentUser?.avatar_color ?? '#00ffff');
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const [entering, setEntering] = useState(false);
 
   useEffect(() => {
     setDisplayName(currentUser?.display_name ?? '');
@@ -291,10 +300,18 @@ function ProfileCard() {
       </form>
 
       <button
-        onClick={() => useGameStore.getState().startGame()}
-        className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)]"
+        onClick={async () => {
+          setEntering(true);
+          const result = await enterLobbyPlatform();
+          setEntering(false);
+          if (!result.ok) {
+            setMessage(result.error || 'Failed to enter lobby platform');
+          }
+        }}
+        className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)] disabled:opacity-60"
+        disabled={entering}
       >
-        PLAY NOW
+        {entering ? 'CONNECTING...' : 'ENTER LOBBY'}
       </button>
     </div>
   );
@@ -303,8 +320,8 @@ function ProfileCard() {
 export default function App() {
   const gameState = useGameStore(state => state.gameState);
   const score = useGameStore(state => state.score);
-  const startGame = useGameStore(state => state.startGame);
   const currentUser = useGameStore(state => state.currentUser);
+  const currentLobby = useGameStore(state => state.currentLobby);
   const authLoading = useGameStore(state => state.authLoading);
   const loadSession = useGameStore(state => state.loadSession);
   const isMobile = useIsMobile();
@@ -324,6 +341,15 @@ export default function App() {
       {gameState === 'playing' && <HUD />}
 
       {/* Menus */}
+      {gameState === 'lobby' && (
+        <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center z-10 pointer-events-auto overflow-y-auto py-8">
+          <h1 className="text-5xl font-black text-cyan-400 mb-6 drop-shadow-[0_0_20px_rgba(34,211,238,0.8)] tracking-tighter">
+            LOBBY PLATFORM
+          </h1>
+          {currentLobby ? <LobbyRoom /> : <LobbyBrowser />}
+        </div>
+      )}
+
       {gameState === 'menu' && (
         <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-10 pointer-events-auto">
           <h1 className="text-6xl font-black text-cyan-400 mb-8 drop-shadow-[0_0_20px_rgba(34,211,238,0.8)] tracking-tighter">
@@ -347,17 +373,19 @@ export default function App() {
       {gameState === 'gameover' && (
         <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-10 pointer-events-auto">
           <h1 className="text-6xl font-black text-red-500 mb-4 drop-shadow-[0_0_20px_rgba(239,68,68,0.8)] tracking-tighter">
-            GAME OVER
+            MATCH OVER
           </h1>
+          {currentLobby && (
+            <div className="text-fuchsia-400 mb-2 text-lg">{currentLobby.name}</div>
+          )}
           <div className="text-3xl text-cyan-400 mb-8 font-bold">
             FINAL SCORE: {score}
           </div>
           <button
-            id="start-button"
-            onClick={() => startGame()}
+            onClick={() => useGameStore.setState({ gameState: 'lobby' })}
             className="px-8 py-4 bg-cyan-500/20 border-2 border-cyan-400 text-cyan-400 text-xl font-bold rounded hover:bg-cyan-400 hover:text-black transition-all duration-200"
           >
-            PLAY AGAIN
+            BACK TO LOBBY
           </button>
         </div>
       )}

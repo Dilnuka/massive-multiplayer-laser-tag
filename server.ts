@@ -246,10 +246,28 @@ async function startServer() {
     },
   });
 
-  // Global Game State
-  const MAX_PLAYERS = 60;
-  let playerCounter = 1;
-  const players: Record<string, {
+  const LOBBY_PLATFORM_ROOM = 'lobby-platform';
+  const MATCH_DURATION_SEC = 120;
+
+  type LobbyStatus = 'waiting' | 'playing';
+  type LobbyMember = {
+    socketId: string;
+    userId: number;
+    username: string;
+    name: string;
+    color: string;
+  };
+  type Lobby = {
+    id: string;
+    name: string;
+    creatorUserId: number;
+    creatorSocketId: string;
+    maxPlayers: number;
+    status: LobbyStatus;
+    members: Map<string, LobbyMember>;
+    createdAt: number;
+  };
+  type GamePlayer = {
     id: string;
     name: string;
     username?: string;
@@ -260,95 +278,353 @@ async function startServer() {
     disabledUntil: number;
     score: number;
     color: string;
-  }> = {};
+  };
+
+  const lobbies = new Map<string, Lobby>();
+  const games = new Map<string, Record<string, GamePlayer>>();
+  const socketToLobby = new Map<string, string>();
+  const socketToGame = new Map<string, string>();
+  const socketUsers = new Map<string, PublicUser>();
+
+  function lobbyRoomId(lobbyId: string) {
+    return `lobby-${lobbyId}`;
+  }
+
+  function gameRoomId(lobbyId: string) {
+    return `game-${lobbyId}`;
+  }
+
+  function toPublicLobby(lobby: Lobby) {
+    const host = lobby.members.get(lobby.creatorSocketId);
+    return {
+      id: lobby.id,
+      name: lobby.name,
+      hostName: host?.name ?? 'Unknown',
+      playerCount: lobby.members.size,
+      maxPlayers: lobby.maxPlayers,
+      status: lobby.status,
+      createdAt: lobby.createdAt,
+    };
+  }
+
+  function toPublicLobbyDetail(lobby: Lobby) {
+    return {
+      ...toPublicLobby(lobby),
+      members: Array.from(lobby.members.values()).map(member => ({
+        socketId: member.socketId,
+        userId: member.userId,
+        username: member.username,
+        name: member.name,
+        color: member.color,
+        isHost: member.socketId === lobby.creatorSocketId,
+      })),
+    };
+  }
+
+  function broadcastLobbyList() {
+    const list = Array.from(lobbies.values())
+      .filter(lobby => lobby.status === 'waiting')
+      .map(toPublicLobby)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    io.to(LOBBY_PLATFORM_ROOM).emit('lobbyList', list);
+  }
+
+  function emitLobbyUpdate(lobby: Lobby) {
+    io.to(lobbyRoomId(lobby.id)).emit('lobbyUpdated', toPublicLobbyDetail(lobby));
+    broadcastLobbyList();
+  }
+
+  function removeMemberFromLobby(socketId: string) {
+    const lobbyId = socketToLobby.get(socketId);
+    if (!lobbyId) return;
+
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) {
+      socketToLobby.delete(socketId);
+      return;
+    }
+
+    lobby.members.delete(socketId);
+    socketToLobby.delete(socketId);
+    io.sockets.sockets.get(socketId)?.leave(lobbyRoomId(lobbyId));
+
+    if (lobby.members.size === 0) {
+      lobbies.delete(lobbyId);
+      games.delete(lobbyId);
+      broadcastLobbyList();
+      return;
+    }
+
+    if (lobby.creatorSocketId === socketId) {
+      const nextHost = lobby.members.values().next().value as LobbyMember;
+      lobby.creatorSocketId = nextHost.socketId;
+      lobby.creatorUserId = nextHost.userId;
+    }
+
+    if (lobby.status === 'waiting') {
+      emitLobbyUpdate(lobby);
+      io.to(lobbyRoomId(lobbyId)).emit('lobbyPlayerLeft', { socketId, lobby: toPublicLobbyDetail(lobby) });
+    }
+  }
+
+  function removePlayerFromGame(socketId: string) {
+    const lobbyId = socketToGame.get(socketId);
+    if (!lobbyId) return;
+
+    const players = games.get(lobbyId);
+    if (!players || !players[socketId]) return;
+
+    delete players[socketId];
+    socketToGame.delete(socketId);
+    io.to(gameRoomId(lobbyId)).emit('playerLeft', socketId);
+  }
+
+  function endLobbyMatch(lobbyId: string) {
+    const lobby = lobbies.get(lobbyId);
+    if (!lobby) return;
+
+    lobby.status = 'waiting';
+    games.delete(lobbyId);
+
+    for (const member of lobby.members.values()) {
+      socketToGame.delete(member.socketId);
+      const memberSocket = io.sockets.sockets.get(member.socketId);
+      memberSocket?.leave(gameRoomId(lobbyId));
+    }
+
+    io.to(lobbyRoomId(lobbyId)).emit('lobbyMatchEnded', toPublicLobbyDetail(lobby));
+    broadcastLobbyList();
+  }
 
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('joinGame', (token?: string) => {
-      if (Object.keys(players).length >= MAX_PLAYERS) {
-        socket.emit('gameError', 'Server is full (60/60 players)');
-        return;
-      }
-
+    socket.on('connectLobbyPlatform', (token?: string) => {
       const user = getUserByToken(token);
       if (!user) {
-        socket.emit('gameError', 'You must sign in before joining the game');
+        socket.emit('lobbyError', 'You must sign in before entering the lobby');
         return;
       }
 
-      let playerName = `Player ${playerCounter++}`;
-      let dbUsername: string | undefined = undefined;
-      let dbUserId: number | undefined = undefined;
+      socketUsers.set(socket.id, user);
+      socket.join(LOBBY_PLATFORM_ROOM);
+      socket.emit('lobbyList', Array.from(lobbies.values()).filter(l => l.status === 'waiting').map(toPublicLobby));
+    });
 
-      playerName = user.display_name || user.username;
-      dbUsername = user.username;
-      dbUserId = user.id;
-      db.prepare('UPDATE users SET matches_played = matches_played + 1 WHERE id = ?').run(user.id);
-      
-      // Assign random color
-      const color = user.avatar_color || randomColor();
+    socket.on('createLobby', (data: { name?: string; maxPlayers?: number }) => {
+      const user = socketUsers.get(socket.id);
+      if (!user) {
+        socket.emit('lobbyError', 'Sign in required');
+        return;
+      }
+      if (socketToLobby.has(socket.id)) {
+        socket.emit('lobbyError', 'Leave your current lobby first');
+        return;
+      }
 
-      players[socket.id] = {
-        id: socket.id,
-        name: playerName,
-        username: dbUsername,
-        userId: dbUserId,
-        position: [0, 2, 0],
-        rotation: 0,
-        state: 'active',
-        disabledUntil: 0,
-        score: 0,
-        color
+      const name = typeof data?.name === 'string' ? data.name.trim() : '';
+      const maxPlayers = Math.min(16, Math.max(2, Number(data?.maxPlayers) || 8));
+      if (name.length < 3 || name.length > 30) {
+        socket.emit('lobbyError', 'Lobby name must be 3-30 characters');
+        return;
+      }
+
+      const lobbyId = crypto.randomBytes(6).toString('hex');
+      const member: LobbyMember = {
+        socketId: socket.id,
+        userId: user.id,
+        username: user.username,
+        name: user.display_name || user.username,
+        color: user.avatar_color || randomColor(),
       };
 
-      // Send initial state
-      socket.emit('gameJoined', players);
-      // Broadcast to others
-      socket.broadcast.emit('playerJoined', players[socket.id]);
+      const lobby: Lobby = {
+        id: lobbyId,
+        name,
+        creatorUserId: user.id,
+        creatorSocketId: socket.id,
+        maxPlayers,
+        status: 'waiting',
+        members: new Map([[socket.id, member]]),
+        createdAt: Date.now(),
+      };
+
+      lobbies.set(lobbyId, lobby);
+      socketToLobby.set(socket.id, lobbyId);
+      socket.join(lobbyRoomId(lobbyId));
+
+      const detail = toPublicLobbyDetail(lobby);
+      socket.emit('lobbyJoined', detail);
+      broadcastLobbyList();
+    });
+
+    socket.on('joinLobby', (lobbyId: string) => {
+      const user = socketUsers.get(socket.id);
+      if (!user) {
+        socket.emit('lobbyError', 'Sign in required');
+        return;
+      }
+      if (socketToLobby.has(socket.id)) {
+        socket.emit('lobbyError', 'Leave your current lobby first');
+        return;
+      }
+
+      const lobby = lobbies.get(lobbyId);
+      if (!lobby) {
+        socket.emit('lobbyError', 'Lobby not found');
+        return;
+      }
+      if (lobby.status !== 'waiting') {
+        socket.emit('lobbyError', 'This match has already started');
+        return;
+      }
+      if (lobby.members.size >= lobby.maxPlayers) {
+        socket.emit('lobbyError', 'Lobby is full');
+        return;
+      }
+
+      const member: LobbyMember = {
+        socketId: socket.id,
+        userId: user.id,
+        username: user.username,
+        name: user.display_name || user.username,
+        color: user.avatar_color || randomColor(),
+      };
+
+      lobby.members.set(socket.id, member);
+      socketToLobby.set(socket.id, lobbyId);
+      socket.join(lobbyRoomId(lobbyId));
+
+      const detail = toPublicLobbyDetail(lobby);
+      socket.emit('lobbyJoined', detail);
+      socket.to(lobbyRoomId(lobbyId)).emit('lobbyPlayerJoined', { member: { ...member, isHost: false }, lobby: detail });
+      broadcastLobbyList();
+    });
+
+    socket.on('leaveLobby', () => {
+      const lobbyId = socketToLobby.get(socket.id);
+      if (!lobbyId) return;
+      removeMemberFromLobby(socket.id);
+      socket.emit('lobbyLeft');
+      broadcastLobbyList();
+    });
+
+    socket.on('startLobby', () => {
+      const lobbyId = socketToLobby.get(socket.id);
+      if (!lobbyId) {
+        socket.emit('lobbyError', 'You are not in a lobby');
+        return;
+      }
+
+      const lobby = lobbies.get(lobbyId);
+      if (!lobby) {
+        socket.emit('lobbyError', 'Lobby not found');
+        return;
+      }
+      if (lobby.creatorSocketId !== socket.id) {
+        socket.emit('lobbyError', 'Only the lobby host can start the game');
+        return;
+      }
+      if (lobby.status !== 'waiting') {
+        socket.emit('lobbyError', 'Match already in progress');
+        return;
+      }
+      if (lobby.members.size < 1) {
+        socket.emit('lobbyError', 'Need at least one player to start');
+        return;
+      }
+
+      lobby.status = 'playing';
+      const players: Record<string, GamePlayer> = {};
+
+      for (const member of lobby.members.values()) {
+        db.prepare('UPDATE users SET matches_played = matches_played + 1 WHERE id = ?').run(member.userId);
+        players[member.socketId] = {
+          id: member.socketId,
+          name: member.name,
+          username: member.username,
+          userId: member.userId,
+          position: [0, 2, 0],
+          rotation: 0,
+          state: 'active',
+          disabledUntil: 0,
+          score: 0,
+          color: member.color,
+        };
+        socketToGame.set(member.socketId, lobbyId);
+        const memberSocket = io.sockets.sockets.get(member.socketId);
+        memberSocket?.join(gameRoomId(lobbyId));
+      }
+
+      games.set(lobbyId, players);
+      broadcastLobbyList();
+
+      io.to(lobbyRoomId(lobbyId)).emit('lobbyStarted', {
+        lobby: toPublicLobbyDetail(lobby),
+        players,
+        matchDuration: MATCH_DURATION_SEC,
+      });
+
+      setTimeout(() => {
+        if (lobbies.get(lobbyId)?.status === 'playing') {
+          endLobbyMatch(lobbyId);
+        }
+      }, MATCH_DURATION_SEC * 1000);
     });
 
     socket.on('updatePosition', (data: { position: [number, number, number], rotation: number }) => {
-      if (players[socket.id]) {
-        players[socket.id].position = data.position;
-        players[socket.id].rotation = data.rotation;
-        socket.broadcast.emit('playerMoved', { id: socket.id, ...data });
-      }
+      const lobbyId = socketToGame.get(socket.id);
+      if (!lobbyId) return;
+      const players = games.get(lobbyId);
+      if (!players?.[socket.id]) return;
+
+      players[socket.id].position = data.position;
+      players[socket.id].rotation = data.rotation;
+      socket.to(gameRoomId(lobbyId)).emit('playerMoved', { id: socket.id, ...data });
     });
 
     socket.on('shoot', (data: { start: [number, number, number], end: [number, number, number], color: string }) => {
-      socket.broadcast.emit('playerShot', { id: socket.id, ...data });
+      const lobbyId = socketToGame.get(socket.id);
+      if (!lobbyId) return;
+      socket.to(gameRoomId(lobbyId)).emit('playerShot', { id: socket.id, ...data });
     });
 
     socket.on('hitPlayer', (targetId: string) => {
-      if (players[targetId] && players[socket.id]) {
-        const now = Date.now();
-        // Allow hit if active OR if disabled period has expired
-        if (players[targetId].state === 'active' || now > players[targetId].disabledUntil) {
-          players[targetId].state = 'disabled';
-          players[targetId].disabledUntil = now + 3000;
-          players[socket.id].score += 100;
+      const lobbyId = socketToGame.get(socket.id);
+      if (!lobbyId) return;
+      const players = games.get(lobbyId);
+      if (!players?.[targetId] || !players[socket.id]) return;
 
-          if (players[socket.id].userId) {
-            db.prepare('UPDATE users SET total_score = total_score + 100, level = CAST(((total_score + 100) / 1000) AS INTEGER) + 1 WHERE id = ?')
-              .run(players[socket.id].userId);
-          }
-          
-          io.emit('playerHit', {
-            targetId,
-            shooterId: socket.id,
-            targetDisabledUntil: players[targetId].disabledUntil,
-            shooterScore: players[socket.id].score
-          });
+      const now = Date.now();
+      if (players[targetId].state === 'active' || now > players[targetId].disabledUntil) {
+        players[targetId].state = 'disabled';
+        players[targetId].disabledUntil = now + 3000;
+        players[socket.id].score += 100;
+
+        if (players[socket.id].userId) {
+          db.prepare('UPDATE users SET total_score = total_score + 100, level = CAST(((total_score + 100) / 1000) AS INTEGER) + 1 WHERE id = ?')
+            .run(players[socket.id].userId);
         }
+
+        io.to(gameRoomId(lobbyId)).emit('playerHit', {
+          targetId,
+          shooterId: socket.id,
+          targetDisabledUntil: players[targetId].disabledUntil,
+          shooterScore: players[socket.id].score,
+        });
       }
     });
 
+    socket.on('leaveMatch', () => {
+      removePlayerFromGame(socket.id);
+      socket.emit('matchLeft');
+    });
+
     socket.on('disconnect', () => {
-      if (players[socket.id]) {
-        delete players[socket.id];
-        io.emit('playerLeft', socket.id);
-      }
+      removePlayerFromGame(socket.id);
+      removeMemberFromLobby(socket.id);
+      socketUsers.delete(socket.id);
+      broadcastLobbyList();
     });
   });
 
