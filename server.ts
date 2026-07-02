@@ -58,15 +58,15 @@ db.exec("UPDATE users SET avatar_color = '#00ffff' WHERE avatar_color IS NULL OR
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const PROFILE_SELECT = `
   SELECT
-    id,
-    username,
-    COALESCE(display_name, username) AS display_name,
-    COALESCE(bio, '') AS bio,
-    COALESCE(avatar_color, '#00ffff') AS avatar_color,
-    total_score,
-    level,
-    matches_played,
-    created_at
+    users.id AS id,
+    users.username AS username,
+    COALESCE(users.display_name, users.username) AS display_name,
+    COALESCE(users.bio, '') AS bio,
+    COALESCE(users.avatar_color, '#00ffff') AS avatar_color,
+    users.total_score AS total_score,
+    users.level AS level,
+    users.matches_played AS matches_played,
+    users.created_at AS created_at
   FROM users
 `;
 
@@ -223,21 +223,27 @@ async function startServer() {
   });
 
   app.patch('/api/profile', requireAuth, (req, res) => {
-    const authReq = req as express.Request & { user: PublicUser };
-    const displayName = typeof req.body.displayName === 'string' ? req.body.displayName.trim() : authReq.user.display_name;
-    const bio = typeof req.body.bio === 'string' ? req.body.bio.trim().slice(0, 160) : authReq.user.bio;
-    const avatarColor = typeof req.body.avatarColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(req.body.avatarColor)
-      ? req.body.avatarColor
-      : authReq.user.avatar_color;
+    try {
+      const authReq = req as express.Request & { user: PublicUser };
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : authReq.user.display_name;
+      const bio = typeof body.bio === 'string' ? body.bio.trim().slice(0, 160) : authReq.user.bio;
+      const avatarColor = typeof body.avatarColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(body.avatarColor)
+        ? body.avatarColor
+        : authReq.user.avatar_color;
 
-    if (!displayName) {
-      return res.status(400).json({ error: 'Display name is required' });
+      if (!displayName) {
+        return res.status(400).json({ error: 'Display name is required' });
+      }
+
+      db.prepare('UPDATE users SET display_name = ?, bio = ?, avatar_color = ? WHERE id = ?')
+        .run(displayName, bio, avatarColor, authReq.user.id);
+      const updatedUser = db.prepare(`${PROFILE_SELECT} WHERE users.id = ?`).get(authReq.user.id) as PublicUser | undefined;
+      res.json({ user: updatedUser });
+    } catch (error) {
+      console.error('Profile update failed:', error);
+      res.status(500).json({ error: 'Failed to update profile' });
     }
-
-    db.prepare('UPDATE users SET display_name = ?, bio = ?, avatar_color = ? WHERE id = ?')
-      .run(displayName, bio, avatarColor, authReq.user.id);
-    const updatedUser = db.prepare(`${PROFILE_SELECT} WHERE id = ?`).get(authReq.user.id) as PublicUser | undefined;
-    res.json({ user: updatedUser });
   });
   const httpServer = createServer(app);
   const io = new Server(httpServer, {

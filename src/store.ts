@@ -504,11 +504,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
         },
         body: JSON.stringify({ displayName, bio, avatarColor }),
       });
-      const data = await res.json();
-      if (!res.ok) {
-        return { ok: false, error: data.error || 'Failed to update profile' };
+      const raw = await res.text();
+      let data: { user?: UserProfile; error?: string } = {};
+      if (raw) {
+        try {
+          data = JSON.parse(raw) as { user?: UserProfile; error?: string };
+        } catch {
+          data = {};
+        }
       }
-      set({ currentUser: data.user });
+      if (!res.ok) {
+        return { ok: false, error: data.error || `Failed to update profile (${res.status})` };
+      }
+      if (data.user) {
+        set({ currentUser: data.user });
+      }
       return { ok: true };
     } catch {
       return { ok: false, error: 'Failed to connect to server' };
