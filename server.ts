@@ -10,6 +10,8 @@ import { Server } from 'socket.io';
 import path from 'path';
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
+import { createAdapter } from '@socket.io/redis-adapter';
+import { createClient, type RedisClientType } from 'redis';
 
 const db = new Database('database.sqlite');
 
@@ -285,9 +287,157 @@ async function startServer() {
     score: number;
     color: string;
   };
+  type GameState = {
+    lobbyId: string;
+    endsAt: number;
+    players: Record<string, GamePlayer>;
+  };
 
-  const lobbies = new Map<string, Lobby>();
-  const games = new Map<string, Record<string, GamePlayer>>();
+  function serializeLobby(lobby: Lobby) {
+    return JSON.stringify({
+      ...lobby,
+      members: Array.from(lobby.members.entries()),
+    });
+  }
+
+  function deserializeLobby(rawLobby: string) {
+    const parsed = JSON.parse(rawLobby) as Omit<Lobby, 'members'> & {
+      members: Array<[string, LobbyMember]>;
+    };
+    return {
+      ...parsed,
+      members: new Map(parsed.members),
+    } as Lobby;
+  }
+
+  interface StateStore {
+    listLobbies(): Promise<Lobby[]>;
+    getLobby(lobbyId: string): Promise<Lobby | null>;
+    saveLobby(lobby: Lobby): Promise<void>;
+    deleteLobby(lobbyId: string): Promise<void>;
+    getGame(lobbyId: string): Promise<GameState | null>;
+    saveGame(game: GameState): Promise<void>;
+    deleteGame(lobbyId: string): Promise<void>;
+  }
+
+  class MemoryStateStore implements StateStore {
+    private readonly lobbies = new Map<string, Lobby>();
+    private readonly games = new Map<string, GameState>();
+
+    async listLobbies() {
+      return Array.from(this.lobbies.values());
+    }
+
+    async getLobby(lobbyId: string) {
+      return this.lobbies.get(lobbyId) ?? null;
+    }
+
+    async saveLobby(lobby: Lobby) {
+      this.lobbies.set(lobby.id, lobby);
+    }
+
+    async deleteLobby(lobbyId: string) {
+      this.lobbies.delete(lobbyId);
+      this.games.delete(lobbyId);
+    }
+
+    async getGame(lobbyId: string) {
+      return this.games.get(lobbyId) ?? null;
+    }
+
+    async saveGame(game: GameState) {
+      this.games.set(game.lobbyId, game);
+    }
+
+    async deleteGame(lobbyId: string) {
+      this.games.delete(lobbyId);
+    }
+  }
+
+  class RedisStateStore implements StateStore {
+    private readonly lobbyIndexKey = 'neon-arena:lobbies';
+
+    constructor(private readonly client: RedisClientType) {}
+
+    private lobbyKey(lobbyId: string) {
+      return `neon-arena:lobby:${lobbyId}`;
+    }
+
+    private gameKey(lobbyId: string) {
+      return `neon-arena:game:${lobbyId}`;
+    }
+
+    async listLobbies() {
+      const lobbyIds = await this.client.sMembers(this.lobbyIndexKey);
+      if (lobbyIds.length === 0) return [];
+
+      const rawLobbies = await this.client.mGet(lobbyIds.map((lobbyId) => this.lobbyKey(lobbyId)));
+      const lobbies: Lobby[] = [];
+
+      for (const rawLobby of rawLobbies) {
+        if (typeof rawLobby !== 'string') continue;
+        try {
+          lobbies.push(deserializeLobby(rawLobby));
+        } catch {
+          // Ignore malformed lobby entries and continue.
+        }
+      }
+
+      return lobbies;
+    }
+
+    async getLobby(lobbyId: string) {
+      const rawLobby = await this.client.get(this.lobbyKey(lobbyId));
+      if (typeof rawLobby !== 'string') return null;
+      return deserializeLobby(rawLobby);
+    }
+
+    async saveLobby(lobby: Lobby) {
+      await this.client
+        .multi()
+        .sAdd(this.lobbyIndexKey, lobby.id)
+        .set(this.lobbyKey(lobby.id), serializeLobby(lobby))
+        .exec();
+    }
+
+    async deleteLobby(lobbyId: string) {
+      await this.client
+        .multi()
+        .sRem(this.lobbyIndexKey, lobbyId)
+        .del(this.lobbyKey(lobbyId))
+        .del(this.gameKey(lobbyId))
+        .exec();
+    }
+
+    async getGame(lobbyId: string) {
+      const rawGame = await this.client.get(this.gameKey(lobbyId));
+      if (typeof rawGame !== 'string') return null;
+      return JSON.parse(rawGame) as GameState;
+    }
+
+    async saveGame(game: GameState) {
+      await this.client.set(this.gameKey(game.lobbyId), JSON.stringify(game));
+    }
+
+    async deleteGame(lobbyId: string) {
+      await this.client.del(this.gameKey(lobbyId));
+    }
+  }
+
+  let stateStore: StateStore = new MemoryStateStore();
+  const redisUrl = process.env.REDIS_URL || process.env.REDIS_PRIVATE_URL || process.env.REDIS_PUBLIC_URL;
+
+  if (redisUrl) {
+    const pubClient = createClient({ url: redisUrl });
+    const subClient = pubClient.duplicate();
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    io.adapter(createAdapter(pubClient, subClient));
+    stateStore = new RedisStateStore(pubClient);
+    console.log('Redis-backed multiplayer enabled.');
+  } else {
+    console.log('Redis not configured; using in-memory multiplayer state.');
+  }
+
   const socketToLobby = new Map<string, string>();
   const socketToGame = new Map<string, string>();
   const socketUsers = new Map<string, PublicUser>();
@@ -327,24 +477,24 @@ async function startServer() {
     };
   }
 
-  function broadcastLobbyList() {
-    const list = Array.from(lobbies.values())
+  async function broadcastLobbyList() {
+    const list = (await stateStore.listLobbies())
       .filter(lobby => lobby.status === 'waiting')
       .map(toPublicLobby)
       .sort((a, b) => b.createdAt - a.createdAt);
     io.to(LOBBY_PLATFORM_ROOM).emit('lobbyList', list);
   }
 
-  function emitLobbyUpdate(lobby: Lobby) {
+  async function emitLobbyUpdate(lobby: Lobby) {
     io.to(lobbyRoomId(lobby.id)).emit('lobbyUpdated', toPublicLobbyDetail(lobby));
-    broadcastLobbyList();
+    await broadcastLobbyList();
   }
 
-  function removeMemberFromLobby(socketId: string) {
+  async function removeMemberFromLobby(socketId: string) {
     const lobbyId = socketToLobby.get(socketId);
     if (!lobbyId) return;
 
-    const lobby = lobbies.get(lobbyId);
+    const lobby = await stateStore.getLobby(lobbyId);
     if (!lobby) {
       socketToLobby.delete(socketId);
       return;
@@ -355,9 +505,8 @@ async function startServer() {
     io.sockets.sockets.get(socketId)?.leave(lobbyRoomId(lobbyId));
 
     if (lobby.members.size === 0) {
-      lobbies.delete(lobbyId);
-      games.delete(lobbyId);
-      broadcastLobbyList();
+      await stateStore.deleteLobby(lobbyId);
+      await broadcastLobbyList();
       return;
     }
 
@@ -368,29 +517,34 @@ async function startServer() {
     }
 
     if (lobby.status === 'waiting') {
-      emitLobbyUpdate(lobby);
+      await stateStore.saveLobby(lobby);
+      await emitLobbyUpdate(lobby);
       io.to(lobbyRoomId(lobbyId)).emit('lobbyPlayerLeft', { socketId, lobby: toPublicLobbyDetail(lobby) });
+    } else {
+      await stateStore.saveLobby(lobby);
     }
   }
 
-  function removePlayerFromGame(socketId: string) {
+  async function removePlayerFromGame(socketId: string) {
     const lobbyId = socketToGame.get(socketId);
     if (!lobbyId) return;
 
-    const players = games.get(lobbyId);
-    if (!players || !players[socketId]) return;
+    const game = await stateStore.getGame(lobbyId);
+    if (!game || !game.players[socketId]) return;
 
-    delete players[socketId];
+    delete game.players[socketId];
+    await stateStore.saveGame(game);
     socketToGame.delete(socketId);
     io.to(gameRoomId(lobbyId)).emit('playerLeft', socketId);
   }
 
-  function endLobbyMatch(lobbyId: string) {
-    const lobby = lobbies.get(lobbyId);
+  async function endLobbyMatch(lobbyId: string) {
+    const lobby = await stateStore.getLobby(lobbyId);
     if (!lobby) return;
 
     lobby.status = 'waiting';
-    games.delete(lobbyId);
+    await stateStore.saveLobby(lobby);
+    await stateStore.deleteGame(lobbyId);
 
     for (const member of lobby.members.values()) {
       socketToGame.delete(member.socketId);
@@ -399,13 +553,24 @@ async function startServer() {
     }
 
     io.to(lobbyRoomId(lobbyId)).emit('lobbyMatchEnded', toPublicLobbyDetail(lobby));
-    broadcastLobbyList();
+    await broadcastLobbyList();
   }
+
+  setInterval(async () => {
+    const lobbies = await stateStore.listLobbies();
+    for (const lobby of lobbies) {
+      if (lobby.status !== 'playing') continue;
+      const game = await stateStore.getGame(lobby.id);
+      if (!game || game.endsAt <= Date.now()) {
+        await endLobbyMatch(lobby.id);
+      }
+    }
+  }, 5000);
 
   io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
 
-    socket.on('connectLobbyPlatform', (token?: string) => {
+    socket.on('connectLobbyPlatform', async (token?: string) => {
       const user = getUserByToken(token);
       if (!user) {
         socket.emit('lobbyError', 'You must sign in before entering the lobby');
@@ -414,10 +579,13 @@ async function startServer() {
 
       socketUsers.set(socket.id, user);
       socket.join(LOBBY_PLATFORM_ROOM);
-      socket.emit('lobbyList', Array.from(lobbies.values()).filter(l => l.status === 'waiting').map(toPublicLobby));
+      const waitingLobbies = (await stateStore.listLobbies())
+        .filter((lobby) => lobby.status === 'waiting')
+        .map(toPublicLobby);
+      socket.emit('lobbyList', waitingLobbies);
     });
 
-    socket.on('createLobby', (data: { name?: string; maxPlayers?: number }) => {
+    socket.on('createLobby', async (data: { name?: string; maxPlayers?: number }) => {
       const user = socketUsers.get(socket.id);
       if (!user) {
         socket.emit('lobbyError', 'Sign in required');
@@ -455,16 +623,16 @@ async function startServer() {
         createdAt: Date.now(),
       };
 
-      lobbies.set(lobbyId, lobby);
+      await stateStore.saveLobby(lobby);
       socketToLobby.set(socket.id, lobbyId);
       socket.join(lobbyRoomId(lobbyId));
 
       const detail = toPublicLobbyDetail(lobby);
       socket.emit('lobbyJoined', detail);
-      broadcastLobbyList();
+      await broadcastLobbyList();
     });
 
-    socket.on('joinLobby', (lobbyId: string) => {
+    socket.on('joinLobby', async (lobbyId: string) => {
       const user = socketUsers.get(socket.id);
       if (!user) {
         socket.emit('lobbyError', 'Sign in required');
@@ -475,7 +643,7 @@ async function startServer() {
         return;
       }
 
-      const lobby = lobbies.get(lobbyId);
+      const lobby = await stateStore.getLobby(lobbyId);
       if (!lobby) {
         socket.emit('lobbyError', 'Lobby not found');
         return;
@@ -498,31 +666,32 @@ async function startServer() {
       };
 
       lobby.members.set(socket.id, member);
+      await stateStore.saveLobby(lobby);
       socketToLobby.set(socket.id, lobbyId);
       socket.join(lobbyRoomId(lobbyId));
 
       const detail = toPublicLobbyDetail(lobby);
       socket.emit('lobbyJoined', detail);
       socket.to(lobbyRoomId(lobbyId)).emit('lobbyPlayerJoined', { member: { ...member, isHost: false }, lobby: detail });
-      broadcastLobbyList();
+      await broadcastLobbyList();
     });
 
-    socket.on('leaveLobby', () => {
+    socket.on('leaveLobby', async () => {
       const lobbyId = socketToLobby.get(socket.id);
       if (!lobbyId) return;
-      removeMemberFromLobby(socket.id);
+      await removeMemberFromLobby(socket.id);
       socket.emit('lobbyLeft');
-      broadcastLobbyList();
+      await broadcastLobbyList();
     });
 
-    socket.on('startLobby', () => {
+    socket.on('startLobby', async () => {
       const lobbyId = socketToLobby.get(socket.id);
       if (!lobbyId) {
         socket.emit('lobbyError', 'You are not in a lobby');
         return;
       }
 
-      const lobby = lobbies.get(lobbyId);
+      const lobby = await stateStore.getLobby(lobbyId);
       if (!lobby) {
         socket.emit('lobbyError', 'Lobby not found');
         return;
@@ -541,7 +710,9 @@ async function startServer() {
       }
 
       lobby.status = 'playing';
+      await stateStore.saveLobby(lobby);
       const players: Record<string, GamePlayer> = {};
+      const endsAt = Date.now() + MATCH_DURATION_SEC * 1000;
 
       for (const member of lobby.members.values()) {
         db.prepare('UPDATE users SET matches_played = matches_played + 1 WHERE id = ?').run(member.userId);
@@ -558,34 +729,28 @@ async function startServer() {
           color: member.color,
         };
         socketToGame.set(member.socketId, lobbyId);
-        const memberSocket = io.sockets.sockets.get(member.socketId);
-        memberSocket?.join(gameRoomId(lobbyId));
+        io.sockets.sockets.get(member.socketId)?.join(gameRoomId(lobbyId));
       }
 
-      games.set(lobbyId, players);
-      broadcastLobbyList();
+      await stateStore.saveGame({ lobbyId, endsAt, players });
+      await broadcastLobbyList();
 
       io.to(lobbyRoomId(lobbyId)).emit('lobbyStarted', {
         lobby: toPublicLobbyDetail(lobby),
         players,
         matchDuration: MATCH_DURATION_SEC,
       });
-
-      setTimeout(() => {
-        if (lobbies.get(lobbyId)?.status === 'playing') {
-          endLobbyMatch(lobbyId);
-        }
-      }, MATCH_DURATION_SEC * 1000);
     });
 
-    socket.on('updatePosition', (data: { position: [number, number, number], rotation: number }) => {
+    socket.on('updatePosition', async (data: { position: [number, number, number], rotation: number }) => {
       const lobbyId = socketToGame.get(socket.id);
       if (!lobbyId) return;
-      const players = games.get(lobbyId);
-      if (!players?.[socket.id]) return;
+      const game = await stateStore.getGame(lobbyId);
+      if (!game?.players[socket.id]) return;
 
-      players[socket.id].position = data.position;
-      players[socket.id].rotation = data.rotation;
+      game.players[socket.id].position = data.position;
+      game.players[socket.id].rotation = data.rotation;
+      await stateStore.saveGame(game);
       socket.to(gameRoomId(lobbyId)).emit('playerMoved', { id: socket.id, ...data });
     });
 
@@ -595,42 +760,43 @@ async function startServer() {
       socket.to(gameRoomId(lobbyId)).emit('playerShot', { id: socket.id, ...data });
     });
 
-    socket.on('hitPlayer', (targetId: string) => {
+    socket.on('hitPlayer', async (targetId: string) => {
       const lobbyId = socketToGame.get(socket.id);
       if (!lobbyId) return;
-      const players = games.get(lobbyId);
-      if (!players?.[targetId] || !players[socket.id]) return;
+      const game = await stateStore.getGame(lobbyId);
+      if (!game?.players[targetId] || !game.players[socket.id]) return;
 
       const now = Date.now();
-      if (players[targetId].state === 'active' || now > players[targetId].disabledUntil) {
-        players[targetId].state = 'disabled';
-        players[targetId].disabledUntil = now + 3000;
-        players[socket.id].score += 100;
+      if (game.players[targetId].state === 'active' || now > game.players[targetId].disabledUntil) {
+        game.players[targetId].state = 'disabled';
+        game.players[targetId].disabledUntil = now + 3000;
+        game.players[socket.id].score += 100;
 
-        if (players[socket.id].userId) {
+        if (game.players[socket.id].userId) {
           db.prepare('UPDATE users SET total_score = total_score + 100, level = CAST(((total_score + 100) / 1000) AS INTEGER) + 1 WHERE id = ?')
-            .run(players[socket.id].userId);
+            .run(game.players[socket.id].userId);
         }
+        await stateStore.saveGame(game);
 
         io.to(gameRoomId(lobbyId)).emit('playerHit', {
           targetId,
           shooterId: socket.id,
-          targetDisabledUntil: players[targetId].disabledUntil,
-          shooterScore: players[socket.id].score,
+          targetDisabledUntil: game.players[targetId].disabledUntil,
+          shooterScore: game.players[socket.id].score,
         });
       }
     });
 
-    socket.on('leaveMatch', () => {
-      removePlayerFromGame(socket.id);
+    socket.on('leaveMatch', async () => {
+      await removePlayerFromGame(socket.id);
       socket.emit('matchLeft');
     });
 
-    socket.on('disconnect', () => {
-      removePlayerFromGame(socket.id);
-      removeMemberFromLobby(socket.id);
+    socket.on('disconnect', async () => {
+      await removePlayerFromGame(socket.id);
+      await removeMemberFromLobby(socket.id);
       socketUsers.delete(socket.id);
-      broadcastLobbyList();
+      await broadcastLobbyList();
     });
   });
 
