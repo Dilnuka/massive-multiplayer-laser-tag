@@ -537,7 +537,7 @@ export default function App() {
       {gameState === 'lobby' && (
         <div className="absolute inset-0 bg-black/85 flex flex-col items-center justify-center z-10 pointer-events-auto overflow-y-auto py-8">
           <h1 className="text-5xl font-black text-cyan-400 mb-6 drop-shadow-[0_0_20px_rgba(34,211,238,0.8)] tracking-tighter">
-            VSIS TIME GAME
+            BATTLE GROUND ELITE
           </h1>
           {currentLobby ? <LobbyRoom /> : <LobbyBrowser />}
         </div>
@@ -546,7 +546,7 @@ export default function App() {
       {gameState === 'menu' && (
         <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center z-10 pointer-events-auto">
           <h1 className="text-6xl font-black text-cyan-400 mb-8 drop-shadow-[0_0_20px_rgba(34,211,238,0.8)] tracking-tighter">
-            VSIS TIME GAME
+            BATTLE GROUND ELITE
           </h1>
           <p className="text-gray-400 mb-8 text-center max-w-md">
             WASD to move. Mouse to look and shoot.<br/>
