@@ -9,6 +9,21 @@ import { MobileControls } from './components/MobileControls';
 import { LobbyBrowser, LobbyRoom } from './components/Lobby';
 import { useGameStore } from './store';
 
+function usePointerLockState() {
+  const [isPointerLocked, setIsPointerLocked] = useState(() => document.pointerLockElement != null);
+
+  useEffect(() => {
+    const handlePointerLockChange = () => {
+      setIsPointerLocked(document.pointerLockElement != null);
+    };
+
+    document.addEventListener('pointerlockchange', handlePointerLockChange);
+    return () => document.removeEventListener('pointerlockchange', handlePointerLockChange);
+  }, []);
+
+  return isPointerLocked;
+}
+
 function HUD() {
   const gameState = useGameStore(state => state.gameState);
   const score = useGameStore(state => state.score);
@@ -20,6 +35,14 @@ function HUD() {
   const playerCount = Object.keys(otherPlayers).length + 1;
   const leaveGame = useGameStore(state => state.leaveGame);
   const isMobile = useIsMobile();
+  const isPointerLocked = usePointerLockState();
+
+  const handleResumeGame = () => {
+    const canvas = document.querySelector('canvas');
+    if (canvas instanceof HTMLCanvasElement) {
+      canvas.requestPointerLock();
+    }
+  };
 
   const leaderboard = useMemo(() => {
     const players = [
@@ -77,7 +100,20 @@ function HUD() {
         >
           LEAVE
         </button>
-        {!isMobile && <div className="text-cyan-400/50 text-xs mt-1 pointer-events-none uppercase tracking-widest font-bold">ESC to unlock cursor</div>}
+        {!isMobile && !isPointerLocked && (
+          <button
+            onClick={handleResumeGame}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="px-3 py-2 bg-cyan-500/20 border border-cyan-400 text-cyan-400 text-xs md:text-sm font-bold rounded hover:bg-cyan-400 hover:text-black transition-all"
+          >
+            RESUME AIM
+          </button>
+        )}
+        {!isMobile && (
+          <div className="text-cyan-400/50 text-xs mt-1 pointer-events-none uppercase tracking-widest font-bold">
+            {isPointerLocked ? 'ESC to unlock cursor' : 'Use RESUME AIM to re-enter the game'}
+          </div>
+        )}
 
         {/* Event Log */}
         <div className="mt-2 md:mt-4 flex flex-col items-end gap-1 pointer-events-none">
