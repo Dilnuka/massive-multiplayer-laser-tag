@@ -182,49 +182,60 @@ function MiniMap({
   meRotation: number;
   others: Array<{ pos: [number, number, number]; rotation: number; color: string; state: 'active' | 'disabled'; name: string }>;
 }) {
-  const size = 152;
-  const half = arenaSize / 2;
+  const size = 172;
   const obstacles = useMemo(() => buildArenaObstacles(150), []);
   const center = size / 2;
-  const radarRadius = size / 2 - 8;
-  const innerSquareSize = radarRadius * Math.sqrt(2);
-  const innerSquareOffset = center - innerSquareSize / 2;
+  const radarRadius = size / 2 - 10;
+  const worldRadius = 42;
+  const scale = radarRadius / worldRadius;
+  const arenaMin = -arenaSize / 2;
+  const arenaMax = arenaSize / 2;
+  const rotationDegrees = (-meRotation * 180) / Math.PI;
 
-  const toXY = (pos: [number, number, number]) => {
-    const xNorm = (pos[0] + half) / arenaSize;
-    const yNorm = (pos[2] + half) / arenaSize;
-    const x = Math.max(0, Math.min(1, xNorm)) * innerSquareSize + innerSquareOffset;
-    const y = Math.max(0, Math.min(1, yNorm)) * innerSquareSize + innerSquareOffset;
-    return { x, y };
-  };
+  const visibleObstacles = useMemo(() => {
+    const margin = 18;
+    return obstacles.filter((obstacle) => {
+      const dx = obstacle.position[0] - me[0];
+      const dz = obstacle.position[2] - me[2];
+      return Math.abs(dx) <= worldRadius + obstacle.size[0] / 2 + margin
+        && Math.abs(dz) <= worldRadius + obstacle.size[2] / 2 + margin;
+    });
+  }, [me, obstacles]);
 
-  const getHeadingPoint = (x: number, y: number, rotation: number, length: number) => ({
-    x: x - Math.sin(rotation) * length,
-    y: y - Math.cos(rotation) * length,
-  });
+  const visiblePlayers = useMemo(() => {
+    const maxDistance = worldRadius * 1.35;
+    return others.filter((player) => {
+      const dx = player.pos[0] - me[0];
+      const dz = player.pos[2] - me[2];
+      return Math.hypot(dx, dz) <= maxDistance;
+    });
+  }, [me, others]);
 
-  const renderMarker = (
+  const renderWorldMarker = (
     x: number,
-    y: number,
+    z: number,
     rotation: number,
     fill: string,
     stroke: string,
-    isLocal: boolean,
-  ) => {
-    const tip = getHeadingPoint(x, y, rotation, isLocal ? 11 : 9);
-    const left = getHeadingPoint(x, y, rotation - 0.78, isLocal ? 5.2 : 4.4);
-    const right = getHeadingPoint(x, y, rotation + 0.78, isLocal ? 5.2 : 4.4);
-    const points = `${tip.x},${tip.y} ${left.x},${left.y} ${right.x},${right.y}`;
-
-    return (
-      <>
-        <polygon points={points} fill={fill} stroke={stroke} strokeWidth={1.2} />
-        <circle cx={x} cy={y} r={isLocal ? 4.5 : 3.5} fill={fill} stroke={stroke} strokeWidth={1.2} />
-      </>
-    );
-  };
-
-  const meXY = toXY(me);
+    sizeScale: number,
+  ) => (
+    <g transform={`translate(${x} ${z}) rotate(${(rotation * 180) / Math.PI})`}>
+      <polygon
+        points={`0,${-3.8 * sizeScale} ${2.5 * sizeScale},${3.4 * sizeScale} ${-2.5 * sizeScale},${3.4 * sizeScale}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={0.7 / scale}
+      />
+      <circle
+        cx={0}
+        cy={0}
+        r={1.6 * sizeScale}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={0.7 / scale}
+      />
+    </g>
+  );
 
   return (
     <div className="bg-black/60 border border-cyan-900/60 rounded-[999px] p-2 backdrop-blur shadow-[0_0_20px_rgba(34,211,238,0.14)]">
@@ -238,55 +249,56 @@ function MiniMap({
         <circle cx={center} cy={center} r={radarRadius + 2} fill="rgba(255,255,255,0.03)" stroke="rgba(34,211,238,0.35)" strokeWidth={2} />
         <circle cx={center} cy={center} r={radarRadius} fill="rgba(2,8,23,0.92)" />
         <g clipPath="url(#radarClip)">
-          <circle cx={center} cy={center} r={radarRadius * 0.7} fill="none" stroke="rgba(34,211,238,0.10)" />
-          <circle cx={center} cy={center} r={radarRadius * 0.4} fill="none" stroke="rgba(34,211,238,0.10)" />
+          <circle cx={center} cy={center} r={radarRadius * 0.72} fill="none" stroke="rgba(34,211,238,0.10)" />
+          <circle cx={center} cy={center} r={radarRadius * 0.42} fill="none" stroke="rgba(34,211,238,0.10)" />
           <line x1={center} y1={6} x2={center} y2={size - 6} stroke="rgba(34,211,238,0.14)" />
           <line x1={6} y1={center} x2={size - 6} y2={center} stroke="rgba(34,211,238,0.14)" />
-          <rect
-            x={innerSquareOffset}
-            y={innerSquareOffset}
-            width={innerSquareSize}
-            height={innerSquareSize}
-            fill="none"
-            stroke="rgba(125,211,252,0.18)"
-            strokeWidth={1}
-            strokeDasharray="3 3"
-          />
-          <rect x={innerSquareOffset} y={innerSquareOffset} width={innerSquareSize} height={3} fill="rgba(34,211,238,0.65)" />
-          <rect x={innerSquareOffset} y={innerSquareOffset + innerSquareSize - 3} width={innerSquareSize} height={3} fill="rgba(217,70,239,0.65)" />
-          <rect x={innerSquareOffset} y={innerSquareOffset} width={3} height={innerSquareSize} fill="rgba(217,70,239,0.65)" />
-          <rect x={innerSquareOffset + innerSquareSize - 3} y={innerSquareOffset} width={3} height={innerSquareSize} fill="rgba(34,211,238,0.65)" />
-          {obstacles.map((obstacle, idx) => {
-            const x = ((obstacle.position[0] - obstacle.size[0] / 2) + half) / arenaSize * innerSquareSize + innerSquareOffset;
-            const y = ((obstacle.position[2] - obstacle.size[2] / 2) + half) / arenaSize * innerSquareSize + innerSquareOffset;
-            const width = obstacle.size[0] / arenaSize * innerSquareSize;
-            const height = obstacle.size[2] / arenaSize * innerSquareSize;
-            return (
+          <g transform={`translate(${center} ${center}) scale(${scale}) rotate(${rotationDegrees}) translate(${-me[0]} ${-me[2]})`}>
+            <rect
+              x={arenaMin}
+              y={arenaMin}
+              width={arenaSize}
+              height={arenaSize}
+              fill="none"
+              stroke="rgba(125,211,252,0.18)"
+              strokeWidth={1 / scale}
+              strokeDasharray={`${3 / scale} ${3 / scale}`}
+            />
+            <line x1={arenaMin} y1={arenaMin} x2={arenaMax} y2={arenaMin} stroke="rgba(34,211,238,0.72)" strokeWidth={3 / scale} />
+            <line x1={arenaMin} y1={arenaMax} x2={arenaMax} y2={arenaMax} stroke="rgba(217,70,239,0.72)" strokeWidth={3 / scale} />
+            <line x1={arenaMin} y1={arenaMin} x2={arenaMin} y2={arenaMax} stroke="rgba(217,70,239,0.72)" strokeWidth={3 / scale} />
+            <line x1={arenaMax} y1={arenaMin} x2={arenaMax} y2={arenaMax} stroke="rgba(34,211,238,0.72)" strokeWidth={3 / scale} />
+            {visibleObstacles.map((obstacle, idx) => (
               <rect
                 key={idx}
-                x={x}
-                y={y}
-                width={width}
-                height={height}
-                rx={1}
-                fill="rgba(15,23,42,0.9)"
-                stroke="rgba(148,163,184,0.35)"
-                strokeWidth={0.8}
+                x={obstacle.position[0] - obstacle.size[0] / 2}
+                y={obstacle.position[2] - obstacle.size[2] / 2}
+                width={obstacle.size[0]}
+                height={obstacle.size[2]}
+                rx={1.2}
+                fill="rgba(15,23,42,0.92)"
+                stroke="rgba(148,163,184,0.4)"
+                strokeWidth={0.9 / scale}
               />
-            );
-          })}
-          {others.map((o, idx) => {
-            const { x, y } = toXY(o.pos);
-            const fill = o.state === 'disabled' ? 'rgba(148,163,184,0.75)' : o.color;
-            return (
-              <g key={`${o.name}-${idx}`}>
-                {renderMarker(x, y, o.rotation, fill, 'rgba(2,6,23,0.8)', false)}
-              </g>
-            );
-          })}
-          {renderMarker(meXY.x, meXY.y, meRotation, '#ffffff', '#22d3ee', true)}
+            ))}
+            {visiblePlayers.map((player, idx) => {
+              const fill = player.state === 'disabled' ? 'rgba(148,163,184,0.78)' : player.color;
+              return (
+                <g key={`${player.name}-${idx}`}>
+                  {renderWorldMarker(player.pos[0], player.pos[2], player.rotation, fill, 'rgba(2,6,23,0.9)', 1)}
+                </g>
+              );
+            })}
+          </g>
+          <circle cx={center} cy={center} r={4.8} fill="#ffffff" stroke="#22d3ee" strokeWidth={1.5} />
+          <polygon
+            points={`${center},${center - 12} ${center + 5.2},${center + 4} ${center - 5.2},${center + 4}`}
+            fill="#ffffff"
+            stroke="#22d3ee"
+            strokeWidth={1.2}
+          />
         </g>
-        <circle cx={center} cy={center} r={1.5} fill="rgba(34,211,238,0.9)" />
+        <circle cx={center} cy={center} r={1.5} fill="rgba(34,211,238,0.95)" />
         <text x={center} y={size - 8} textAnchor="middle" className="fill-cyan-200/70" style={{ fontSize: 9, letterSpacing: '0.18em' }}>
           LIVE MATCH
         </text>
