@@ -190,8 +190,8 @@ function MiniMap({
   const scale = radarRadius / worldRadius;
   const arenaMin = -arenaSize / 2;
   const arenaMax = arenaSize / 2;
-  const rotationDegrees = (-meRotation * 180) / Math.PI;
-  const northX = center + Math.sin(meRotation) * (radarRadius - 10);
+  const rotationDegrees = (meRotation * 180) / Math.PI;
+  const northX = center - Math.sin(meRotation) * (radarRadius - 10);
   const northY = center - Math.cos(meRotation) * (radarRadius - 10);
 
   const visibleObstacles = useMemo(() => {
