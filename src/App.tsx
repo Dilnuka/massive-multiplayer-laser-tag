@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
 */
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Game } from './components/Game';
 import { MobileControls } from './components/MobileControls';
 import { useGameStore } from './store';
@@ -132,27 +132,32 @@ function useIsMobile() {
 function AuthMenu() {
   const [isLogin, setIsLogin] = useState(true);
   const [username, setUsername] = useState('');
+  const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const setCurrentUser = useGameStore(state => state.setCurrentUser);
+  const [submitting, setSubmitting] = useState(false);
+  const setAuth = useGameStore(state => state.setAuth);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSubmitting(true);
     try {
       const res = await fetch(isLogin ? '/api/login' : '/api/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify({ username, password, displayName })
       });
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || 'An error occurred');
         return;
       }
-      setCurrentUser(data.user);
+      setAuth(data.token, data.user);
     } catch (err) {
       setError('Failed to connect to server');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -160,6 +165,15 @@ function AuthMenu() {
     <form onSubmit={handleSubmit} className="flex flex-col gap-4 w-80 bg-black/50 p-6 rounded border border-cyan-900/50">
       <h2 className="text-2xl text-cyan-400 font-bold mb-2 text-center">{isLogin ? 'LOGIN' : 'REGISTER'}</h2>
       {error && <div className="text-red-500 text-sm">{error}</div>}
+      {!isLogin && (
+        <input
+          type="text"
+          placeholder="Display Name"
+          value={displayName}
+          onChange={e => setDisplayName(e.target.value)}
+          className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
+        />
+      )}
       <input
         type="text"
         placeholder="Username"
@@ -174,16 +188,115 @@ function AuthMenu() {
         onChange={e => setPassword(e.target.value)}
         className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
       />
-      <button type="submit" className="px-4 py-2 bg-cyan-500/20 border border-cyan-400 text-cyan-400 font-bold hover:bg-cyan-400 hover:text-black transition-all">
-        {isLogin ? 'LOGIN' : 'REGISTER'}
+      <div className="text-cyan-400/60 text-xs">
+        {isLogin ? 'Sign in to use your saved profile and stats.' : 'Create an account with at least an 8 character password.'}
+      </div>
+      <button
+        type="submit"
+        disabled={submitting}
+        className="px-4 py-2 bg-cyan-500/20 border border-cyan-400 text-cyan-400 font-bold hover:bg-cyan-400 hover:text-black transition-all disabled:opacity-60"
+      >
+        {submitting ? 'PLEASE WAIT...' : isLogin ? 'LOGIN' : 'REGISTER'}
       </button>
       <button type="button" onClick={() => setIsLogin(!isLogin)} className="text-cyan-400/50 text-sm hover:text-cyan-400">
         {isLogin ? 'Need an account? Register' : 'Have an account? Login'}
       </button>
-      <button type="button" onClick={() => setCurrentUser({ username: `Guest_${Math.floor(Math.random()*1000)}`, total_score: 0, level: 1, matches_played: 0 })} className="text-gray-500 text-sm hover:text-gray-400 mt-2">
-        Play as Guest
-      </button>
     </form>
+  );
+}
+
+function ProfileCard() {
+  const currentUser = useGameStore(state => state.currentUser);
+  const logout = useGameStore(state => state.logout);
+  const updateProfile = useGameStore(state => state.updateProfile);
+  const [displayName, setDisplayName] = useState(currentUser?.display_name ?? '');
+  const [bio, setBio] = useState(currentUser?.bio ?? '');
+  const [avatarColor, setAvatarColor] = useState(currentUser?.avatar_color ?? '#00ffff');
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDisplayName(currentUser?.display_name ?? '');
+    setBio(currentUser?.bio ?? '');
+    setAvatarColor(currentUser?.avatar_color ?? '#00ffff');
+  }, [currentUser]);
+
+  if (!currentUser) {
+    return null;
+  }
+
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setMessage('');
+    const result = await updateProfile({ displayName, bio, avatarColor });
+    setSaving(false);
+    setMessage(result.ok ? 'Profile updated.' : result.error || 'Failed to update profile.');
+  };
+
+  return (
+    <div className="flex flex-col items-center gap-6 w-96 max-w-[90vw]">
+      <form onSubmit={handleSave} className="bg-black/50 border border-cyan-900/50 p-5 rounded w-full">
+        <div className="flex items-center gap-4 mb-4">
+          <div className="w-12 h-12 rounded-full border-2 border-white/20" style={{ backgroundColor: avatarColor }} />
+          <div>
+            <div className="text-cyan-400 text-xl font-bold">{currentUser.username}</div>
+            <div className="text-cyan-400/60 text-sm">Member since {new Date(currentUser.created_at * 1000).toLocaleDateString()}</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 text-sm mb-4">
+          <div className="bg-black/40 p-2 rounded text-center text-cyan-400/80">Level<br />{currentUser.level}</div>
+          <div className="bg-black/40 p-2 rounded text-center text-cyan-400/80">Score<br />{currentUser.total_score}</div>
+          <div className="bg-black/40 p-2 rounded text-center text-cyan-400/80">Matches<br />{currentUser.matches_played}</div>
+        </div>
+
+        <div className="flex flex-col gap-3">
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+            placeholder="Display Name"
+            className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400"
+          />
+          <textarea
+            value={bio}
+            onChange={(e) => setBio(e.target.value)}
+            placeholder="Short bio"
+            maxLength={160}
+            rows={3}
+            className="px-4 py-2 bg-transparent border border-cyan-900 text-cyan-400 focus:outline-none focus:border-cyan-400 resize-none"
+          />
+          <label className="text-cyan-400/70 text-sm flex items-center justify-between gap-3">
+            Profile Color
+            <input
+              type="color"
+              value={avatarColor}
+              onChange={(e) => setAvatarColor(e.target.value)}
+              className="h-10 w-16 bg-transparent border border-cyan-900 rounded"
+            />
+          </label>
+        </div>
+
+        {message && <div className={`mt-3 text-sm ${message === 'Profile updated.' ? 'text-green-400' : 'text-red-400'}`}>{message}</div>}
+
+        <div className="mt-4 flex gap-3">
+          <button type="submit" disabled={saving} className="flex-1 px-4 py-2 bg-cyan-500/20 border border-cyan-400 text-cyan-400 font-bold hover:bg-cyan-400 hover:text-black transition-all disabled:opacity-60">
+            {saving ? 'SAVING...' : 'SAVE PROFILE'}
+          </button>
+          <button type="button" onClick={() => void logout()} className="px-4 py-2 border border-red-500 text-red-400 hover:bg-red-500 hover:text-black transition-all">
+            LOG OUT
+          </button>
+        </div>
+      </form>
+
+      <button
+        onClick={() => useGameStore.getState().startGame()}
+        className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)]"
+      >
+        PLAY NOW
+      </button>
+    </div>
   );
 }
 
@@ -192,8 +305,13 @@ export default function App() {
   const score = useGameStore(state => state.score);
   const startGame = useGameStore(state => state.startGame);
   const currentUser = useGameStore(state => state.currentUser);
-  const setCurrentUser = useGameStore(state => state.setCurrentUser);
+  const authLoading = useGameStore(state => state.authLoading);
+  const loadSession = useGameStore(state => state.loadSession);
   const isMobile = useIsMobile();
+
+  useEffect(() => {
+    void loadSession();
+  }, [loadSession]);
 
   return (
     <div className="w-screen h-screen bg-black relative overflow-hidden font-mono select-none">
@@ -216,24 +334,12 @@ export default function App() {
             Hit enemies for points. Don't get hit!
           </p>
 
-          {!currentUser ? (
+          {authLoading ? (
+            <div className="text-cyan-400/80 text-lg">Loading profile...</div>
+          ) : !currentUser ? (
             <AuthMenu />
           ) : (
-            <div className="flex flex-col items-center gap-6 w-80">
-              <div className="bg-black/50 border border-cyan-900/50 p-4 rounded w-full text-center">
-                <div className="text-cyan-400 text-xl font-bold mb-2">{currentUser.username}</div>
-                <div className="text-cyan-400/70 text-sm">Level: {currentUser.level}</div>
-                <div className="text-cyan-400/70 text-sm">Total Score: {currentUser.total_score}</div>
-                <div className="text-cyan-400/70 text-sm">Matches: {currentUser.matches_played}</div>
-                <button onClick={() => setCurrentUser(null)} className="mt-4 text-xs text-red-500/70 hover:text-red-500">Log Out</button>
-              </div>
-              <button
-                onClick={() => startGame()}
-                className="w-full px-8 py-4 bg-fuchsia-500/20 border-2 border-fuchsia-400 text-fuchsia-400 text-xl font-bold rounded hover:bg-fuchsia-400 hover:text-black transition-all duration-200 shadow-[0_0_15px_rgba(232,121,249,0.5)]"
-              >
-                PLAY NOW
-              </button>
-            </div>
+            <ProfileCard />
           )}
         </div>
       )}

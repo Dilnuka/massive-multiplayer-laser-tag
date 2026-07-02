@@ -28,6 +28,18 @@ export interface PlayerData {
   color: string;
 }
 
+export interface UserProfile {
+  id: number;
+  username: string;
+  display_name: string;
+  bio: string;
+  avatar_color: string;
+  total_score: number;
+  level: number;
+  matches_played: number;
+  created_at: number;
+}
+
 export interface LaserData {
   id: string;
   start: [number, number, number];
@@ -51,6 +63,7 @@ export interface GameEvent {
 
 interface GameStore {
   gameState: GameState;
+  authLoading: boolean;
   score: number;
   timeLeft: number;
   playerState: EntityState;
@@ -62,8 +75,13 @@ interface GameStore {
   
   // Multiplayer
   socket: Socket | null;
-  currentUser: { username: string, total_score: number, level: number, matches_played: number } | null;
-  setCurrentUser: (user: any) => void;
+  authToken: string | null;
+  currentUser: UserProfile | null;
+  setAuth: (token: string | null, user: UserProfile | null) => void;
+  loadSession: () => Promise<void>;
+  logout: () => Promise<void>;
+  refreshCurrentUser: () => Promise<void>;
+  updateProfile: (profile: { displayName: string; bio: string; avatarColor: string }) => Promise<{ ok: boolean; error?: string }>;
   otherPlayers: Record<string, PlayerData>;
 
   startGame: () => void;
@@ -108,6 +126,7 @@ const INITIAL_ENEMIES: EnemyData[] = [
 
 export const useGameStore = create<GameStore>((set, get) => ({
   gameState: 'menu',
+  authLoading: true,
   score: 0,
   timeLeft: 120, // 2 minutes
   playerState: 'active',
@@ -118,8 +137,125 @@ export const useGameStore = create<GameStore>((set, get) => ({
   events: [],
   
   socket: null,
+  authToken: null,
   currentUser: null,
-  setCurrentUser: (user) => set({ currentUser: user }),
+  setAuth: (token, user) => {
+    if (typeof window !== 'undefined') {
+      if (token) {
+        window.localStorage.setItem('auth_token', token);
+      } else {
+        window.localStorage.removeItem('auth_token');
+      }
+    }
+    set({ authToken: token, currentUser: user, authLoading: false });
+  },
+  loadSession: async () => {
+    if (typeof window === 'undefined') {
+      set({ authLoading: false });
+      return;
+    }
+
+    const token = window.localStorage.getItem('auth_token');
+    if (!token) {
+      set({ authToken: null, currentUser: null, authLoading: false });
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/me', {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        window.localStorage.removeItem('auth_token');
+        set({ authToken: null, currentUser: null, authLoading: false });
+        return;
+      }
+      const data = await res.json();
+      set({ authToken: token, currentUser: data.user, authLoading: false });
+    } catch {
+      set({ authLoading: false });
+    }
+  },
+  logout: async () => {
+    const { authToken, socket } = get();
+    if (socket) {
+      socket.disconnect();
+    }
+    if (authToken) {
+      try {
+        await fetch('/api/logout', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${authToken}`
+          }
+        });
+      } catch {
+        // Ignore logout network failures and still clear the local session.
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('auth_token');
+    }
+    set({
+      authToken: null,
+      currentUser: null,
+      authLoading: false,
+      gameState: 'menu',
+      socket: null,
+      otherPlayers: {},
+      enemies: [],
+      lasers: [],
+      particles: [],
+      events: [],
+      score: 0,
+      timeLeft: 120,
+      playerState: 'active',
+      playerDisabledUntil: 0
+    });
+  },
+  refreshCurrentUser: async () => {
+    const { authToken } = get();
+    if (!authToken) return;
+    try {
+      const res = await fetch('/api/me', {
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      set({ currentUser: data.user });
+    } catch {
+      // Ignore transient refresh failures.
+    }
+  },
+  updateProfile: async ({ displayName, bio, avatarColor }) => {
+    const { authToken } = get();
+    if (!authToken) {
+      return { ok: false, error: 'You must be signed in' };
+    }
+
+    try {
+      const res = await fetch('/api/profile', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ displayName, bio, avatarColor })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { ok: false, error: data.error || 'Failed to update profile' };
+      }
+      set({ currentUser: data.user });
+      return { ok: true };
+    } catch {
+      return { ok: false, error: 'Failed to connect to server' };
+    }
+  },
   otherPlayers: {},
 
   mobileInput: {
@@ -133,10 +269,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
   })),
 
   startGame: () => {
-    const { socket, currentUser } = get();
+    const { socket, authToken } = get();
     
     if (socket) {
       socket.disconnect();
+    }
+
+    if (!authToken) {
+      return;
     }
 
     let newSocket: Socket | null = null;
@@ -145,7 +285,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     newSocket = io(window.location.origin);
     
     newSocket.on('connect', () => {
-      newSocket!.emit('joinGame', currentUser?.username);
+      newSocket!.emit('joinGame', authToken);
     });
 
     newSocket.on('gameError', (msg: string) => {
@@ -163,6 +303,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         score: 0,
         enemies: INITIAL_ENEMIES.map(e => ({ ...e, state: 'active', disabledUntil: 0 }))
       });
+      get().refreshCurrentUser();
     });
 
       newSocket.on('playerJoined', (player: PlayerData) => {
@@ -217,6 +358,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
           if (isLocalShooter) {
             newState.score = data.shooterScore;
+            void get().refreshCurrentUser();
           }
 
           // Update other players' states
@@ -297,7 +439,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
       events: [],
       score: 0,
       timeLeft: 120,
-      playerState: 'active'
+      playerState: 'active',
+      playerDisabledUntil: 0
     });
   },
 
