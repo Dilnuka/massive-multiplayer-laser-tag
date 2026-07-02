@@ -264,7 +264,7 @@ export function Player() {
 
   return (
     <>
-      {!isTouchDevice.current && <PointerLockControls />}
+      {!isTouchDevice.current && gameState === 'playing' && <PointerLockControls />}
       <RigidBody
         ref={body}
         colliders={false}
