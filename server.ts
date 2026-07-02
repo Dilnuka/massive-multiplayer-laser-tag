@@ -141,7 +141,7 @@ async function startServer() {
   const app = express();
   app.use(express.json());
   
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
   
   app.post('/api/register', (req, res) => {
     const { username, password, displayName } = req.body;
@@ -360,9 +360,10 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    app.use(express.static('dist'));
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
     app.get('*', (req, res) => {
-      res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
