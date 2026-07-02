@@ -191,6 +191,8 @@ function MiniMap({
   const arenaMin = -arenaSize / 2;
   const arenaMax = arenaSize / 2;
   const rotationDegrees = (-meRotation * 180) / Math.PI;
+  const northX = center + Math.sin(meRotation) * (radarRadius - 10);
+  const northY = center - Math.cos(meRotation) * (radarRadius - 10);
 
   const visibleObstacles = useMemo(() => {
     const margin = 18;
@@ -219,26 +221,35 @@ function MiniMap({
     stroke: string,
     sizeScale: number,
   ) => (
-    <g transform={`translate(${x} ${z}) rotate(${(rotation * 180) / Math.PI})`}>
-      <polygon
-        points={`0,${-3.8 * sizeScale} ${2.5 * sizeScale},${3.4 * sizeScale} ${-2.5 * sizeScale},${3.4 * sizeScale}`}
-        fill={fill}
-        stroke={stroke}
-        strokeWidth={0.7 / scale}
+    <g transform={`translate(${x} ${z})`}>
+      <line
+        x1={0}
+        y1={0}
+        x2={-Math.sin(rotation) * 5.2 * sizeScale}
+        y2={-Math.cos(rotation) * 5.2 * sizeScale}
+        stroke={fill}
+        strokeWidth={1.5 / scale}
+        strokeLinecap="round"
       />
       <circle
         cx={0}
         cy={0}
-        r={1.6 * sizeScale}
+        r={2 * sizeScale}
         fill={fill}
         stroke={stroke}
-        strokeWidth={0.7 / scale}
+        strokeWidth={0.9 / scale}
+      />
+      <circle
+        cx={-Math.sin(rotation) * 5.2 * sizeScale}
+        cy={-Math.cos(rotation) * 5.2 * sizeScale}
+        r={0.95 * sizeScale}
+        fill={stroke}
       />
     </g>
   );
 
   return (
-    <div className="bg-black/60 border border-cyan-900/60 rounded-[999px] p-2 backdrop-blur shadow-[0_0_20px_rgba(34,211,238,0.14)]">
+    <div className="bg-black/65 border border-cyan-900/60 rounded-[999px] p-2 backdrop-blur shadow-[0_0_24px_rgba(34,211,238,0.16)]">
       <div className="text-cyan-300/80 text-[10px] font-bold tracking-[0.25em] mb-1 text-center">RADAR</div>
       <svg width={size} height={size} className="block">
         <defs>
@@ -248,6 +259,7 @@ function MiniMap({
         </defs>
         <circle cx={center} cy={center} r={radarRadius + 2} fill="rgba(255,255,255,0.03)" stroke="rgba(34,211,238,0.35)" strokeWidth={2} />
         <circle cx={center} cy={center} r={radarRadius} fill="rgba(2,8,23,0.92)" />
+        <circle cx={center} cy={center} r={radarRadius - 2} fill="none" stroke="rgba(217,70,239,0.08)" strokeWidth={3} />
         <g clipPath="url(#radarClip)">
           <circle cx={center} cy={center} r={radarRadius * 0.72} fill="none" stroke="rgba(34,211,238,0.10)" />
           <circle cx={center} cy={center} r={radarRadius * 0.42} fill="none" stroke="rgba(34,211,238,0.10)" />
@@ -290,15 +302,15 @@ function MiniMap({
               );
             })}
           </g>
-          <circle cx={center} cy={center} r={4.8} fill="#ffffff" stroke="#22d3ee" strokeWidth={1.5} />
-          <polygon
-            points={`${center},${center - 12} ${center + 5.2},${center + 4} ${center - 5.2},${center + 4}`}
-            fill="#ffffff"
-            stroke="#22d3ee"
-            strokeWidth={1.2}
-          />
+          <line x1={center} y1={center} x2={center} y2={center - 12} stroke="#22d3ee" strokeWidth={2} strokeLinecap="round" />
+          <circle cx={center} cy={center} r={5.2} fill="#ffffff" stroke="#22d3ee" strokeWidth={1.8} />
+          <circle cx={center} cy={center - 12} r={2.2} fill="#22d3ee" stroke="#082f49" strokeWidth={1} />
         </g>
         <circle cx={center} cy={center} r={1.5} fill="rgba(34,211,238,0.95)" />
+        <circle cx={northX} cy={northY} r={8} fill="rgba(8,47,73,0.9)" stroke="rgba(34,211,238,0.65)" strokeWidth={1.2} />
+        <text x={northX} y={northY + 3} textAnchor="middle" className="fill-cyan-100" style={{ fontSize: 10, fontWeight: 700 }}>
+          N
+        </text>
         <text x={center} y={size - 8} textAnchor="middle" className="fill-cyan-200/70" style={{ fontSize: 9, letterSpacing: '0.18em' }}>
           LIVE MATCH
         </text>
