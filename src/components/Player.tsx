@@ -30,6 +30,7 @@ export function Player() {
   });
   const lastEmitTime = useRef(0);
   const lastShootTime = useRef(0);
+  const lastLocalPosEmit = useRef(0);
 
   const gunGroupRef = useRef<THREE.Group>(null);
   const gunVisualRef = useRef<THREE.Group>(null);
@@ -44,27 +45,36 @@ export function Player() {
   }, []);
 
   useEffect(() => {
+    const isTypingTarget = (target: EventTarget | null) => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || target.isContentEditable;
+    };
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
       const key = e.key.toLowerCase();
       if (key in keys.current) {
         keys.current[key as keyof typeof keys.current] = true;
       }
     };
     const handleKeyUp = (e: KeyboardEvent) => {
+      if (isTypingTarget(e.target)) return;
       const key = e.key.toLowerCase();
       if (key in keys.current) {
         keys.current[key as keyof typeof keys.current] = false;
       }
     };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
     };
   }, []);
 
   const updatePlayerPosition = useGameStore(state => state.updatePlayerPosition);
+  const setLocalPlayerPosition = useGameStore(state => state.setLocalPlayerPosition);
 
   // Shooting logic function
   const shoot = () => {
@@ -206,6 +216,10 @@ export function Player() {
       direction.multiplyScalar(SPEED);
     }
 
+    // Ensure the body is awake when receiving input.
+    if (direction.lengthSq() > 0) {
+      body.current.wakeUp();
+    }
     body.current.setLinvel({ x: direction.x, y: velocity.y, z: direction.z }, true);
 
     // Mobile Look Rotation
@@ -231,6 +245,11 @@ export function Player() {
     // Update camera position to follow rigid body
     const pos = body.current.translation();
     camera.position.set(pos.x, pos.y + 1.6, pos.z); // Eye level (raised from 0.8)
+    const nowLocal = Date.now();
+    if (nowLocal - lastLocalPosEmit.current > 50) {
+      setLocalPlayerPosition([pos.x, pos.y, pos.z]);
+      lastLocalPosEmit.current = nowLocal;
+    }
 
     // Sync gun to camera
     if (gunGroupRef.current) {

@@ -30,6 +30,7 @@ function HUD() {
   const timeLeft = useGameStore(state => state.timeLeft);
   const playerState = useGameStore(state => state.playerState);
   const otherPlayers = useGameStore(state => state.otherPlayers);
+  const localPlayerPosition = useGameStore(state => state.localPlayerPosition);
   const events = useGameStore(state => state.events);
   const currentLobby = useGameStore(state => state.currentLobby);
   const playerCount = Object.keys(otherPlayers).length + 1;
@@ -58,6 +59,15 @@ function HUD() {
 
   return (
     <>
+      {/* Minimap */}
+      <div className="absolute bottom-4 left-4 pointer-events-none">
+        <MiniMap
+          arenaSize={200}
+          me={localPlayerPosition}
+          others={Object.values(otherPlayers).map(p => ({ pos: p.position, color: p.color, state: p.state }))}
+        />
+      </div>
+
       {/* Crosshair */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none flex flex-col items-center">
         <div className="relative">
@@ -149,6 +159,51 @@ function HUD() {
       {/* Mobile Controls */}
       {isMobile && gameState === 'playing' && <MobileControls />}
     </>
+  );
+}
+
+function MiniMap({
+  arenaSize,
+  me,
+  others,
+}: {
+  arenaSize: number;
+  me: [number, number, number];
+  others: Array<{ pos: [number, number, number]; color: string; state: 'active' | 'disabled' }>;
+}) {
+  const size = 128;
+  const half = arenaSize / 2;
+
+  const toXY = (pos: [number, number, number]) => {
+    const xNorm = (pos[0] + half) / arenaSize;
+    const yNorm = (pos[2] + half) / arenaSize;
+    const x = Math.max(0, Math.min(1, xNorm)) * size;
+    const y = Math.max(0, Math.min(1, yNorm)) * size;
+    return { x, y };
+  };
+
+  const meXY = toXY(me);
+
+  return (
+    <div className="bg-black/55 border border-cyan-900/60 rounded p-2 backdrop-blur">
+      <div className="text-cyan-400/70 text-[10px] font-bold tracking-widest mb-1">RADAR</div>
+      <svg width={size} height={size} className="block">
+        {/* grid */}
+        <rect x="0" y="0" width={size} height={size} fill="rgba(0,0,0,0.25)" stroke="rgba(34,211,238,0.25)" />
+        <line x1={size / 2} y1={0} x2={size / 2} y2={size} stroke="rgba(34,211,238,0.15)" />
+        <line x1={0} y1={size / 2} x2={size} y2={size / 2} stroke="rgba(34,211,238,0.15)" />
+
+        {/* others */}
+        {others.map((o, idx) => {
+          const { x, y } = toXY(o.pos);
+          const fill = o.state === 'disabled' ? 'rgba(148,163,184,0.7)' : o.color;
+          return <circle key={idx} cx={x} cy={y} r={3.5} fill={fill} stroke="rgba(0,0,0,0.5)" />;
+        })}
+
+        {/* me */}
+        <circle cx={meXY.x} cy={meXY.y} r={4.5} fill="#ffffff" stroke="#00ffff" strokeWidth={1.5} />
+      </svg>
+    </div>
   );
 }
 
