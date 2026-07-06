@@ -1,4 +1,5 @@
-#!/bin/sh
+
+Abut m#!/bin/sh
 # Auto-commit and push when the Cursor agent finishes a session.
 cat > /dev/null
 
