@@ -8,16 +8,54 @@ import { createServer as createViteServer } from 'vite';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
+import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import { createAdapter } from '@socket.io/redis-adapter';
 import { createClient, type RedisClientType } from 'redis';
-import pg from 'pg';
 
-const { Pool } = pg;
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-});
+const db = new Database('database.sqlite');
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password_hash TEXT,
+    password_salt TEXT,
+    display_name TEXT,
+    bio TEXT DEFAULT '',
+    avatar_color TEXT DEFAULT '#00ffff',
+    total_score INTEGER DEFAULT 0,
+    level INTEGER DEFAULT 1,
+    matches_played INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (strftime('%s', 'now'))
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`);
+
+function ensureColumn(table: string, column: string, definition: string) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  if (!columns.some((item) => item.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+ensureColumn('users', 'password_salt', 'TEXT');
+ensureColumn('users', 'display_name', 'TEXT');
+ensureColumn('users', 'bio', "TEXT DEFAULT ''");
+ensureColumn('users', 'avatar_color', "TEXT DEFAULT '#00ffff'");
+ensureColumn('users', 'created_at', "INTEGER DEFAULT (strftime('%s', 'now'))");
+db.exec("UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = ''");
+db.exec("UPDATE users SET bio = '' WHERE bio IS NULL");
+db.exec("UPDATE users SET avatar_color = '#00ffff' WHERE avatar_color IS NULL OR avatar_color = ''");
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const PROFILE_SELECT = `
@@ -55,44 +93,14 @@ function hashPassword(password: string, salt: string) {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
-async function initDb() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id BIGSERIAL PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      password_salt TEXT,
-      display_name TEXT,
-      bio TEXT NOT NULL DEFAULT '',
-      avatar_color TEXT NOT NULL DEFAULT '#00ffff',
-      total_score BIGINT NOT NULL DEFAULT 0,
-      level BIGINT NOT NULL DEFAULT 1,
-      matches_played BIGINT NOT NULL DEFAULT 0,
-      created_at BIGINT NOT NULL DEFAULT (EXTRACT(EPOCH FROM NOW())::BIGINT)
-    );
-  `);
-
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      created_at BIGINT NOT NULL,
-      expires_at BIGINT NOT NULL
-    );
-  `);
-
-  // Backfill defaults for older rows.
-  await pool.query(`UPDATE users SET display_name = username WHERE display_name IS NULL OR display_name = '';`);
-  await pool.query(`UPDATE users SET bio = '' WHERE bio IS NULL;`);
-  await pool.query(`UPDATE users SET avatar_color = '#00ffff' WHERE avatar_color IS NULL OR avatar_color = '';`);
-}
-
-async function createSession(userId: number) {
+function createSession(userId: number) {
   const token = crypto.randomBytes(32).toString('hex');
   const now = Date.now();
-  await pool.query(
-    'INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4)',
-    [token, userId, now, now + SESSION_TTL_MS]
+  db.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').run(
+    token,
+    userId,
+    now,
+    now + SESSION_TTL_MS
   );
   return token;
 }
@@ -101,19 +109,16 @@ function sanitizeUser(user: PublicUser | undefined) {
   return user ?? null;
 }
 
-async function getUserByToken(token?: string) {
+function getUserByToken(token?: string) {
   if (!token) return null;
   const now = Date.now();
-  await pool.query('DELETE FROM sessions WHERE expires_at <= $1', [now]);
-  const result = await pool.query(
-    `
-      ${PROFILE_SELECT}
-      INNER JOIN sessions ON sessions.user_id = users.id
-      WHERE sessions.token = $1 AND sessions.expires_at > $2
-    `,
-    [token, now]
-  );
-  return sanitizeUser(result.rows[0] as PublicUser | undefined);
+  db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now);
+  const user = db.prepare(`
+    ${PROFILE_SELECT}
+    INNER JOIN sessions ON sessions.user_id = users.id
+    WHERE sessions.token = ? AND sessions.expires_at > ?
+  `).get(token, now) as PublicUser | undefined;
+  return sanitizeUser(user);
 }
 
 function getAuthToken(req: express.Request) {
@@ -124,29 +129,23 @@ function getAuthToken(req: express.Request) {
 
 function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const token = getAuthToken(req);
-  void (async () => {
-    const user = await getUserByToken(token ?? undefined);
-    if (!user) {
-      res.status(401).json({ error: 'Authentication required' });
-      return;
-    }
-    (req as express.Request & { user?: PublicUser; token?: string }).user = user;
-    (req as express.Request & { user?: PublicUser; token?: string }).token = token ?? undefined;
-    next();
-  })().catch((err) => {
-    console.error('Auth middleware error:', err);
-    res.status(500).json({ error: 'Server error' });
-  });
+  const user = getUserByToken(token ?? undefined);
+  if (!user) {
+    res.status(401).json({ error: 'Authentication required' });
+    return;
+  }
+  (req as express.Request & { user?: PublicUser; token?: string }).user = user;
+  (req as express.Request & { user?: PublicUser; token?: string }).token = token ?? undefined;
+  next();
 }
 
 async function startServer() {
-  await initDb();
   const app = express();
   app.use(express.json());
   
   const PORT = Number(process.env.PORT) || 3000;
   
-  app.post('/api/register', async (req, res) => {
+  app.post('/api/register', (req, res) => {
     const { username, password, displayName } = req.body;
     const normalizedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
     const normalizedDisplayName = typeof displayName === 'string' && displayName.trim() ? displayName.trim() : normalizedUsername;
@@ -164,22 +163,16 @@ async function startServer() {
       const salt = crypto.randomBytes(16).toString('hex');
       const hash = hashPassword(password, salt);
       const avatarColor = randomColor();
-      const insert = await pool.query(
-        `
-          INSERT INTO users (username, password_hash, password_salt, display_name, avatar_color)
-          VALUES ($1, $2, $3, $4, $5)
-          RETURNING id
-        `,
-        [normalizedUsername, hash, salt, normalizedDisplayName, avatarColor]
-      );
+      const result = db.prepare(`
+        INSERT INTO users (username, password_hash, password_salt, display_name, avatar_color)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(normalizedUsername, hash, salt, normalizedDisplayName, avatarColor);
 
-      const userId = Number(insert.rows[0].id);
-      const profile = await pool.query(`${PROFILE_SELECT} WHERE users.id = $1`, [userId]);
-      const token = await createSession(userId);
-      const user = profile.rows[0] as PublicUser | undefined;
+      const user = db.prepare(`${PROFILE_SELECT} WHERE id = ?`).get(result.lastInsertRowid) as PublicUser | undefined;
+      const token = createSession(Number(result.lastInsertRowid));
       res.json({ token, user });
     } catch (e: any) {
-      if (e.code === '23505') {
+      if (e.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         res.status(400).json({ error: 'Username already exists' });
       } else {
         res.status(500).json({ error: 'Server error' });
@@ -187,13 +180,14 @@ async function startServer() {
     }
   });
 
-  app.post('/api/login', async (req, res) => {
+  app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
     const normalizedUsername = typeof username === 'string' ? username.trim().toLowerCase() : '';
     if (!normalizedUsername || !password) return res.status(400).json({ error: 'Missing username or password' });
 
-    const userRecordResult = await pool.query('SELECT id, password_hash, password_salt FROM users WHERE username = $1', [normalizedUsername]);
-    const userRecord = userRecordResult.rows[0] as { id: number; password_hash: string; password_salt?: string } | undefined;
+    const userRecord = db.prepare('SELECT * FROM users WHERE username = ?').get(normalizedUsername) as
+      | { id: number; password_hash: string; password_salt?: string }
+      | undefined;
 
     if (!userRecord) {
       return res.status(401).json({ error: 'Invalid username or password' });
@@ -202,19 +196,16 @@ async function startServer() {
     const hash = userRecord.password_salt
       ? hashPassword(password, userRecord.password_salt)
       : crypto.createHash('sha256').update(password).digest('hex');
-    const userResult = await pool.query(
-      `${PROFILE_SELECT} WHERE users.id = $1 AND EXISTS (SELECT 1 FROM users auth_check WHERE auth_check.id = $2 AND auth_check.password_hash = $3)`,
-      [userRecord.id, userRecord.id, hash]
-    );
-    const user = userResult.rows[0] as PublicUser | undefined;
+    const user = db.prepare(`${PROFILE_SELECT} WHERE id = ? AND EXISTS (SELECT 1 FROM users auth_check WHERE auth_check.id = ? AND auth_check.password_hash = ?)`)
+      .get(userRecord.id, userRecord.id, hash) as PublicUser | undefined;
 
     if (user) {
       if (!userRecord.password_salt) {
         const newSalt = crypto.randomBytes(16).toString('hex');
         const newHash = hashPassword(password, newSalt);
-        await pool.query('UPDATE users SET password_hash = $1, password_salt = $2 WHERE id = $3', [newHash, newSalt, userRecord.id]);
+        db.prepare('UPDATE users SET password_hash = ?, password_salt = ? WHERE id = ?').run(newHash, newSalt, userRecord.id);
       }
-      const token = await createSession(userRecord.id);
+      const token = createSession(userRecord.id);
       res.json({ token, user });
     } else {
       res.status(401).json({ error: 'Invalid username or password' });
@@ -225,15 +216,15 @@ async function startServer() {
     res.json({ user: (req as express.Request & { user: PublicUser }).user });
   });
 
-  app.post('/api/logout', requireAuth, async (req, res) => {
+  app.post('/api/logout', requireAuth, (req, res) => {
     const token = (req as express.Request & { token?: string }).token;
     if (token) {
-      await pool.query('DELETE FROM sessions WHERE token = $1', [token]);
+      db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     }
     res.json({ ok: true });
   });
 
-  app.patch('/api/profile', requireAuth, async (req, res) => {
+  app.patch('/api/profile', requireAuth, (req, res) => {
     try {
       const authReq = req as express.Request & { user: PublicUser };
       const body = req.body && typeof req.body === 'object' ? req.body : {};
@@ -247,14 +238,10 @@ async function startServer() {
         return res.status(400).json({ error: 'Display name is required' });
       }
 
-      await pool.query('UPDATE users SET display_name = $1, bio = $2, avatar_color = $3 WHERE id = $4', [
-        displayName,
-        bio,
-        avatarColor,
-        authReq.user.id,
-      ]);
-      const updated = await pool.query(`${PROFILE_SELECT} WHERE users.id = $1`, [authReq.user.id]);
-      res.json({ user: updated.rows[0] as PublicUser | undefined });
+      db.prepare('UPDATE users SET display_name = ?, bio = ?, avatar_color = ? WHERE id = ?')
+        .run(displayName, bio, avatarColor, authReq.user.id);
+      const updatedUser = db.prepare(`${PROFILE_SELECT} WHERE users.id = ?`).get(authReq.user.id) as PublicUser | undefined;
+      res.json({ user: updatedUser });
     } catch (error) {
       console.error('Profile update failed:', error);
       res.status(500).json({ error: 'Failed to update profile' });
@@ -584,7 +571,7 @@ async function startServer() {
     console.log('User connected:', socket.id);
 
     socket.on('connectLobbyPlatform', async (token?: string) => {
-      const user = await getUserByToken(token);
+      const user = getUserByToken(token);
       if (!user) {
         socket.emit('lobbyError', 'You must sign in before entering the lobby');
         return;
@@ -728,7 +715,7 @@ async function startServer() {
       const endsAt = Date.now() + MATCH_DURATION_SEC * 1000;
 
       for (const member of lobby.members.values()) {
-        await pool.query('UPDATE users SET matches_played = matches_played + 1 WHERE id = $1', [member.userId]);
+        db.prepare('UPDATE users SET matches_played = matches_played + 1 WHERE id = ?').run(member.userId);
         players[member.socketId] = {
           id: member.socketId,
           name: member.name,
@@ -786,10 +773,8 @@ async function startServer() {
         game.players[socket.id].score += 100;
 
         if (game.players[socket.id].userId) {
-          await pool.query(
-            'UPDATE users SET total_score = total_score + 100, level = FLOOR(((total_score + 100)::numeric / 1000))::bigint + 1 WHERE id = $1',
-            [game.players[socket.id].userId]
-          );
+          db.prepare('UPDATE users SET total_score = total_score + 100, level = CAST(((total_score + 100) / 1000) AS INTEGER) + 1 WHERE id = ?')
+            .run(game.players[socket.id].userId);
         }
         await stateStore.saveGame(game);
 
